@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""3D-модель машины GT3 (вид сверху) для Tkinter Canvas."""
+"""Стилизованная 2D-схема GT-машины, не модель конкретной марки."""
 
 import math
 
@@ -48,75 +48,29 @@ def draw_car_topdown(canvas, x, y, angle_deg, scale=1.0, body="#c0392b",
 
 
 class RivalModelPanel:
-    """Панель 'Модель соперника': рисует локальную машину и ближайшего соперника
-    в виде 3D-моделей (top-down), показывает их относительный поворот и дистанцию."""
-
-    def __init__(self, canvas, store):
+    def __init__(self, canvas):
         self.canvas = canvas
-        self.store = store
+        self.selected = None
 
-    def redraw(self):
+    def render(self, state):
         c = self.canvas
-        w = int(c.winfo_width() or 300)
-        h = int(c.winfo_height() or 180)
         c.delete("all")
-        s = self.store
-        coords = s.car_coordinates
-        if not coords or s.local_idx >= len(coords):
-            c.create_text(w/2, h/2, text="Ожидание данных о машинах...",
-                          fill="#5a6b7d", font=("Segoe UI", 10))
+        w, h = c.winfo_width(), c.winfo_height()
+        own = state.cars.get(state.selected_id)
+        rivals = [car for car in state.cars.values() if car.car_id != state.selected_id]
+        rival = state.cars.get(self.selected) if self.selected != state.selected_id else None
+        if rival is None and rivals:
+            nearby = [car for car in rivals if own and own.located and car.located]
+            rival = (min(nearby, key=lambda car: math.hypot(car.x-own.x, car.y-own.y))
+                     if nearby else rivals[0])
+        if rival is None:
+            c.create_text(w/2, h/2, text="Нет данных о соперниках", fill="#8295aa")
             return
-        lx, ly = coords[s.local_idx][0], coords[s.local_idx][1]
-        # ближайший соперник
-        best = None
-        bestd = 1e18
-        for idx, (wx, wy, wz) in enumerate(coords):
-            if idx == s.local_idx:
-                continue
-            d = math.hypot(wx - lx, wy - ly)
-            if d < bestd:
-                bestd, best = d, idx
-        if best is None:
-            return
-        # углы машин из векторов скорости
-        a_me = self._angle(s.local_idx)
-        a_rv = self._angle(best)
-        rel = (a_rv - a_me + 180) % 360 - 180
-        # позиции на панели
-        cxm, cym = w * 0.30, h * 0.52
-        cxr, cyr = w * 0.72, h * 0.42
-        # дистанция влияет на масштаб соперника (перспектива)
-        dm = bestd / 1000.0
-        sc_me = 1.15
-        sc_rv = max(0.45, min(1.15, 6.0 / (dm + 1.2)))
-        color_rv = "#dfe6ee"
-        if best < len(s.car_classes):
-            cls = s.car_classes[best].upper()
-            if "AM" in cls and "PRO-AM" not in cls:
-                color_rv = "#4ac8ff"
-            elif "PRO-AM" in cls or "SILVER" in cls:
-                color_rv = "#9ee84a"
-        draw_car_topdown(c, cxm, cym, a_me + 90, sc_me, body="#ffd24a", tag="me")
-        draw_car_topdown(c, cxr, cyr, a_rv + 90, sc_rv, body=color_rv, tag="rv")
-        name = s.car_names[best] if best < len(s.car_names) else f"Car {best+1}"
-        c.create_text(cxm, h - 16, text="ВЫ", fill="#ffd24a", font=("Consolas", 9, "bold"))
-        c.create_text(cxr, h - 16, text=name[:16], fill="#9fb2c6", font=("Consolas", 9))
-        c.create_text(w/2, 16,
-                      text=f"Дистанция: {dm:.1f} m   Отн. курс: {rel:+.0f}°",
-                      fill="#cfd8e3", font=("Consolas", 10, "bold"))
-        # линия взгляда
-        c.create_line(cxm, cym, cxr, cyr, fill="#2a3644", dash=(3, 4))
-
-    def _angle(self, idx):
-        s = self.store
-        vx = vy = 0
-        if idx < len(s.car_vel_x):
-            vx = s.car_vel_x[idx]
-        if idx < len(s.car_vel_y):
-            vy = s.car_vel_y[idx]
-        if vx == 0 and vy == 0:
-            coords = s.car_coordinates
-            cur = coords[idx]
-            nxt = coords[(idx + 1) % len(coords)]
-            vx, vy = nxt[0]-cur[0], nxt[1]-cur[1]
-        return math.degrees(math.atan2(vy, vx))
+        draw_car_topdown(c, w/2, h*.30, 270, scale=min(1.8, h / 120), body="#69c3f0")
+        lines = [rival.name or f"Car {rival.car_id}", rival.model or "Модель неизвестна",
+                 f"P{rival.position or '--'} · {rival.cup}" + (" · PIT" if rival.in_pit else "")]
+        if own and own.located and rival.located:
+            lines.append(f"По прямой: {math.hypot(rival.x-own.x, rival.y-own.y):.1f} м")
+        for i, line in enumerate(lines):
+            c.create_text(w/2, h*.57+i*min(19, h*.10), text=line, fill="#d4dfeb", font=("Segoe UI", 10))
+        c.create_text(w/2, 12, text="2D-схема · выбор в таблице", fill="#8295aa", font=("Segoe UI", 9))

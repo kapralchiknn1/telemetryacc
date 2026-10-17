@@ -1,211 +1,105 @@
-# -*- coding: utf-8 -*-
-"""
-Генератор пакетов ACC UDP для демо-режима.
-
-Собирает корректные бинарные пакеты (magic 0x4571234F) и отправляет их
-на указанный UDP-порт, чтобы приложение можно было тестировать без запущенной игры.
-Машины едут по эталонной трассе (тот же сплайн, что используется в карте).
-"""
-
+"""Deterministic in-process demo. Never opens sockets or impersonates an ACC protocol."""
 import math
-import struct
+import random
 import threading
 import time
-import socket
-import random
 
-MAGIC = 0x4571234F
-
-
-def make_header(ptype, payload_len):
-    total = 5 + payload_len
-    return struct.pack("<BIBBH", total & 0xFFFF, MAGIC, 1, ptype, 0)
+try:
+    from .model import Car, PassageTiming
+    from .track_map import REFERENCE_TRACK
+    from .acc_udp import CAR_MODELS
+except ImportError:
+    from model import Car, PassageTiming
+    from track_map import REFERENCE_TRACK
+    from acc_udp import CAR_MODELS
 
 
 class DemoGenerator(threading.Thread):
-    def __init__(self, port=9000, n_cars=12, track_points=None, host="127.0.0.1"):
+    def __init__(self, store, n_cars=12, seed=42):
         super().__init__(daemon=True)
-        self.port = port
-        self.host = host
+        if not 1 <= n_cars <= 60:
+            raise ValueError('n_cars must be 1..60')
+        self.store = store
         self.n = n_cars
-        self.running = True
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # трасса: замкнутый сплайн (тот же, что в assets/track_map.py)
-        from track_map import REFERENCE_TRACK
+        self.random = random.Random(seed)
+        self.stop_event = threading.Event()
+        self.progress = [1.0 + (n_cars - i) * 0.015 for i in range(n_cars)]
+        self.elapsed = 0.0
         self.track = REFERENCE_TRACK
-        self._resample()
-        # стартовые позиции вдоль трассы (нормализованные 0..1)
-        self.s_frac = [i * 0.011 for i in range(n_cars)]
-        self.speeds = [random.uniform(160, 200) for _ in range(n_cars)]  # km/h
-        self.lap = [0] * n_cars
-        self.local_idx = 0
-        self.names = [f"#{i+1} {n}" for i, n in enumerate(
-            ["Rossi", "Vermeulen", "Bortolotti", "Catsburg", "Engel", "Ferrari",
-             "Girardot", "Haase", "Iltsov", "Jaminet", "Klingmann", "Lauda Jr",
-             "Mapelli", "Nato", "Pera"])]
-        self.classes = ["Pro"] * n_cars
-        self.t = time.time()
-        self.tick = 0
+        self.lengths = [math.dist(a, self.track[(i + 1) % len(self.track)])
+                        for i, a in enumerate(self.track)]
+        self.total_len = sum(self.lengths)
+        self.timing = PassageTiming()
+        self.lap_start = [0.0] * n_cars
+        self.best = [0] * n_cars
+        self.last = [0] * n_cars
+        self.initial_laps = [int(v) for v in self.progress]
 
-    def _resample(self):
-        pts = self.track
-        self.cum = [0.0]
-        for i in range(len(pts)):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % len(pts)]
-            self.cum.append(self.cum[-1] + math.hypot(x2 - x1, y2 - y1))
-        self.total_len = self.cum[-1]
+    def position(self, fraction):
+        remaining = (fraction % 1) * self.total_len
+        for i, length in enumerate(self.lengths):
+            if remaining <= length and length > 0:
+                a, b = self.track[i], self.track[(i + 1) % len(self.track)]
+                t = remaining / length
+                return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t,
+                        math.atan2(b[1] - a[1], b[0] - a[0]))
+            remaining -= length
+        return (*self.track[0], 0.0)
 
-    def pos_at(self, frac):
-        d = (frac % 1.0) * self.total_len
-        # бинарный поиск сегмента
-        lo, hi = 0, len(self.cum) - 1
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if self.cum[mid + 1] < d:
-                lo = mid + 1
-            else:
-                hi = mid
-        seg_len = self.cum[lo + 1] - self.cum[lo] or 1e-6
-        t = (d - self.cum[lo]) / seg_len
-        x1, y1 = self.track[lo]
-        x2, y2 = self.track[(lo + 1) % len(self.track)]
-        x = x1 + (x2 - x1) * t
-        y = y1 + (y2 - y1) * t
-        ang = math.atan2(y2 - y1, x2 - x1)
-        return x, y, ang
+    def step(self, dt):
+        self.elapsed += dt
+        now = time.monotonic()
+        with self.store.lock:
+            s = self.store.state
+            s.demo, s.player_id, s.focus_id = True, 7, 7
+            s.track, s.track_length, s.session_type = 'Demo circuit', self.total_len, 10
+            s.session_remaining_ms = max(0, (1800 - self.elapsed) * 1000)
+            for i in range(self.n):
+                # Non-contiguous car IDs are deliberate: ID != list offset.
+                cid = 7 + i * 3
+                car = s.cars.setdefault(cid, Car(cid))
+                speed = 170 + 30 * math.sin(self.progress[i] * 8 + i * 0.3)
+                before = int(self.progress[i])
+                self.progress[i] += speed / 3.6 * dt / self.total_len
+                if int(self.progress[i]) > before:
+                    # First crossing starts a full lap; don't count the initial partial lap.
+                    if before > self.initial_laps[i]:
+                        self.last[i] = int((self.elapsed - self.lap_start[i]) * 1000)
+                        self.best[i] = min(self.best[i] or self.last[i], self.last[i])
+                    self.lap_start[i] = self.elapsed
+                car.name, car.number = f'Demo Driver {i + 1}', 10 + i
+                car.cup = ['Pro', 'Silver', 'Pro-Am', 'Am'][i % 4]
+                car.model = CAR_MODELS[[30, 32, 34, 35][i % 4]]
+                car.x, car.y, car.yaw = self.position(self.progress[i])
+                car.speed, car.gear = speed, min(6, max(1, int(speed / 40) + 1))
+                car.spline, car.laps = self.progress[i] % 1, int(self.progress[i])
+                car.located, car.updated = True, now
+                car.lap_ms = int((self.elapsed - self.lap_start[i]) * 1000)
+                car.best_ms, car.last_ms = self.best[i], self.last[i]
+                self.timing.observe(car, self.elapsed)
+            order = sorted(range(self.n), key=lambda i: self.progress[i], reverse=True)
+            for pos, idx in enumerate(order, 1):
+                s.cars[7 + idx * 3].position = pos
+            self.timing.apply(s)
+            me = s.cars[7]
+            s.speed, s.gear, s.rpm = me.speed, me.gear, int(4400 + me.speed * 12)
+            s.fuel = max(0, 80 - self.elapsed * 0.025)
+            s.gas, s.brake = 0.7 + 0.3 * math.sin(self.elapsed), max(0, 0.2 * math.sin(self.elapsed * 2))
+            s.tyre_core = [85 + 4 * math.sin(self.elapsed / 8 + i) for i in range(4)]
+            s.tyre_pressure = [26.5 + 0.2 * math.sin(self.elapsed / 10 + i) for i in range(4)]
+            s.air, s.road, s.wetness = 24.0, 32.0, 0.0
+            s.wind_speed, s.wind_direction = 3 + math.sin(self.elapsed / 8), self.elapsed % 360
+            s.position, s.current_lap, s.total_laps = me.position, me.laps + 1, 25
+            s.best_ms, s.lap_ms = me.best_ms, me.lap_ms
+            s.shared_seen = s.broadcast_seen = now
 
     def run(self):
-        dt = 1.0 / 60.0
-        while self.running:
-            start = time.time()
-            self._step(dt)
-            self._send_all()
-            elapsed = time.time() - start
-            time.sleep(max(0.0, dt - elapsed))
+        last = time.monotonic()
+        while not self.stop_event.is_set():
+            now = time.monotonic()
+            self.step(min(0.1, max(0, now - last)))
+            last = now
+            self.stop_event.wait(1 / 30)
 
     def stop(self):
-        self.running = False
-        try:
-            self.sock.close()
-        except Exception:
-            pass
-
-    def _step(self, dt):
-        self.tick += 1
-        for i in range(self.n):
-            # скорость слегка гуляет
-            target = 170 + 40 * math.sin((self.s_frac[i] * 6) + self.tick * 0.008)
-            self.speeds[i] += (target - self.speeds[i]) * 0.05
-            v_ms = self.speeds[i] / 3.6
-            self.s_frac[i] += v_ms * dt / self.total_len
-            if self.s_frac[i] >= 1.0:
-                self.s_frac[i] -= 1.0
-                self.lap[i] += 1
-
-    def _payload_basic(self):
-        i = self.local_idx
-        speed_ms = self.speeds[i] / 3.6
-        rpm = 4500 + int(speed_ms * 40 + random.uniform(-100, 100))
-        gear = max(1, min(6, int(speed_ms / 45) + 1))
-        fuel = 80.0 - (self.tick % 7200) * 0.002
-        temps_out = [random.uniform(80, 105) for _ in range(4)]
-        temps_in = [t - random.uniform(10, 20) for t in temps_out]
-        pressures = [random.uniform(1.6, 2.1) for _ in range(4)]
-        grip = [random.uniform(0.8, 1.0) for _ in range(4)]
-        # заголовок пакета BYTES: 7 целых + 6 float + 4 целых = 17 полей
-        head_fmt = "<HBBhBBBBffffffBBBB"
-        body = struct.pack(head_fmt,
-                           i, 1, 1, int(time.time() * 1000) & 0x7FFF, self.tick & 0xFF,
-                           45, gear + 1,
-                           speed_ms, float(rpm), 0.0, 400.0, fuel, 0.0,
-                           0, 6, 0, 0)
-        assert struct.calcsize(head_fmt) == len(body)
-        tyres = struct.pack("<" + "f" * 16,
-                            *pressures, *grip, *temps_out, *temps_in)
-        return body + tyres
-
-    def _payload_quant(self):
-        n = self.n
-        o, la, lb = [], [], []
-        vx, vy = [], []
-        gb, st = [], []
-        for i in range(n):
-            x, y, ang = self.pos_at(self.s_frac[i])
-            o.append(int(x * 1000))
-            la.append(int(y * 1000))
-            lb.append(0)
-            v = self.speeds[i] / 3.6
-            vx.append(int(v * math.cos(ang) * 100))
-            vy.append(int(v * math.sin(ang) * 100))
-            gas = int(random.uniform(0.6, 1.0) * 255)
-            brk = int(random.uniform(0.0, 0.2) * 255)
-            gb.append(gas); gb.append(brk)
-            st.append(int(random.uniform(-0.3, 0.3) * 65535))
-        ti = int((self.tick % 9000) / 60 * 1000)
-        fmt = "<BBHHHhhhHhh"          # 11 полей
-        body = struct.pack(fmt, n, 13, self.tick & 0xFFFF, 0, 0,
-                           0, 0, 0, ti, 0, int(self.total_len))
-        body += struct.pack("<" + "i" * (n * 3), *(o + la + lb))
-        body += struct.pack("<" + "h" * n, *vx)
-        body += struct.pack("<" + "h" * n, *vy)
-        body += struct.pack("<" + "BB" * n, *gb)
-        body += struct.pack("<" + "h" * n, *st)
-        return body
-
-    def _payload_rounds(self):
-        i = self.local_idx
-        fmt = "<BBHBBBBBIf"           # 10 полей: localIdx, numCars, lapPos, curLap,
-                                     # totalLaps, lapsAhead, lapsBehind, classId, dist, time
-        ahead = sum(1 for j in range(self.n)
-                    if (self.lap[j], self.s_frac[j]) > (self.lap[i], self.s_frac[i]))
-        pos = self.n - ahead
-        laptime = (self.tick % 9000) / 60.0
-        return struct.pack(fmt, i, self.n, pos, self.lap[i] + 1, 25,
-                           ahead, self.n - 1 - ahead, 0, 0, laptime)
-
-    def _payload_labels(self):
-        out = struct.pack("<BB", self.n, 13)
-        for i in range(self.n):
-            name = self.names[i].encode("utf-8")[:47].ljust(48, b"\x00")
-            cls = self.classes[i][:3].encode("utf-8").ljust(4, b"\x00")
-            out += name + cls + b"\x00"
-        return out
-
-    def _payload_hotlap(self):
-        best = 90000 + (self.tick // 60) % 5000
-        cur = int((self.tick % 9000) / 60 * 1000)
-        return struct.pack("<II", best, cur)
-
-    def _payload_setup(self):
-        return struct.pack("<BBBBI", 6, 12, 9, 3, 5)
-
-    def _payload_fuel(self):
-        fuel = 80.0 - (self.tick % 7200) * 0.002
-        return struct.pack("<ffff", fuel, 0.0, self.total_len / 1000.0, 0.0)
-
-    def _payload_rain(self):
-        wet = 0
-        clouds = 0x20 | 0x40  # clear + partly cloudy
-        wind_dir = (self.tick * 0.02) % 360.0
-        wind_spd = 3.0 + 2.0 * math.sin(self.tick * 0.01)
-        pad = 32.0 + 3.0 * math.sin(self.tick * 0.003)
-        air = 24.0
-        return struct.pack("<BfBBhh", wet, wind_dir, int(wind_spd * 100),
-                           clouds, int(pad * 10), int(air * 10))
-
-    def _payload_test(self):
-        return struct.pack("<I", self.tick)
-
-    def _send_all(self):
-        addr = (self.host, self.port)
-        parts = [(1, self._payload_basic()), (2, self._payload_quant()),
-                 (3, self._payload_rounds()), (4, self._payload_labels()),
-                 (5, self._payload_hotlap()), (6, self._payload_setup()),
-                 (8, self._payload_fuel()), (9, self._payload_rain())]
-        for ptype, payload in parts:
-            pkt = make_header(ptype, len(payload)) + payload
-            try:
-                self.sock.sendto(pkt, addr)
-            except OSError:
-                return
+        self.stop_event.set()

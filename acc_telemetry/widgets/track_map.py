@@ -1,200 +1,80 @@
-# -*- coding: utf-8 -*-
-"""
-Карта трассы (Tkinter Canvas) с позициями пилота и соперников.
-
-Координаты машин из пакета QUITTLY приходят в миллиметрах в мировой системе
-координат ACC. Карта автоматически центрируется по всем машинам и
-масштабируется, поэтому контур корректно отображается при любом смещении.
-Колесо мыши - зум, двойной клик - сброс зума.
-"""
-
-import tkinter as tk
+"""World-coordinate map. Outlines are real data or explicitly a recorded driving trail."""
 import math
+import tkinter as tk
+from collections import deque
 
 
-class TrackMap(tk.Frame):
-    def __init__(self, master, store, width=460, height=320, **kw):
-        super().__init__(master, bg="#10151c", **kw)
-        self.store = store
-        self.width = width
-        self.height = height
-        self.canvas = tk.Canvas(self, width=width, height=height,
-                                bg="#0b0f15", highlightthickness=1,
-                                highlightbackground="#2a3644")
-        self.canvas.pack(fill="both", expand=True)
+class TrackMap(tk.Canvas):
+    def __init__(self, master, **kw):
+        super().__init__(master, bg='#0b0f15', highlightthickness=0, width=500, height=350, **kw)
         self.zoom = 1.0
-        # контур трассы из ACC Python API (список мировых точек (x,y,z))
-        self.api_points = None
-        # история позиций локальной машины для "следа"
-        self.trail = []
+        self.outline = []
+        self.trail = deque(maxlen=10000)
+        self.key = None
+        self.bounds = None
+        self.bind('<MouseWheel>', lambda e: self.wheel(1.1 if e.delta > 0 else 1 / 1.1))
+        self.bind('<Button-4>', lambda e: self.wheel(1.1))
+        self.bind('<Button-5>', lambda e: self.wheel(1 / 1.1))
+        self.bind('<Double-Button-1>', lambda e: self.reset_zoom())
 
-        self.canvas.bind("<MouseWheel>", self._on_wheel)      # Windows/Mac
-        self.canvas.bind("<Button-4>", lambda e: self._wheel(1.1))   # Linux
-        self.canvas.bind("<Button-5>", lambda e: self._wheel(0.9))
-        self.canvas.bind("<Double-Button-1>", lambda e: self._reset_zoom())
+    def wheel(self, factor):
+        self.zoom = max(.4, min(5, self.zoom * factor))
 
-    def _on_wheel(self, event):
-        self._wheel(1.1 if event.delta > 0 else 0.9)
-
-    def _wheel(self, factor):
-        self.zoom = max(0.4, min(4.0, self.zoom * factor))
-        self.redraw()
-
-    def _reset_zoom(self):
+    def reset_zoom(self):
         self.zoom = 1.0
-        self.redraw()
 
-    def set_api_points(self, pts):
-        """Контур трассы из ACC Python API (sTrackMapNodes)."""
-        self.api_points = pts
+    def reset(self):
+        self.key = None
+        self.trail.clear()
+        self.bounds = None
 
-    # ---------- преобразование координат ----------
-    def _bounds_from_cars(self, coords):
-        xs = [c[0] for c in coords]
-        ys = [c[1] for c in coords]
-        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
-        spread = max(max(xs) - min(xs), max(ys) - min(ys), 1)
-        return cx, cy, spread
-
-    def world_to_screen(self, wx, wy, cx, cy, scale):
-        sx = self.width / 2 + (wx - cx) * scale * self.zoom
-        sy = self.height / 2 - (wy - cy) * scale * self.zoom
-        return sx, sy
-
-    # ---------- отрисовка ----------
-    def redraw(self):
-        s = self.store
-        c = self.canvas
-        c.delete("all")
-        coords = s.car_coordinates
-        if not coords:
-            c.create_text(self.width/2, self.height/2,
-                          text="Нет данных о позициях машин\n(запустите игру или демо-режим)",
-                          fill="#5a6b7d", font=("Segoe UI", 11), justify="center")
+    def render(self, state, outline=()):
+        self.delete('all')
+        w, h = max(10, self.winfo_width()), max(10, self.winfo_height())
+        key = (state.track, state.demo, state.selected_id)
+        if key != self.key:
+            self.reset()
+            self.key = key
+        cars = [c for c in state.cars.values() if c.located]
+        own = state.cars.get(state.selected_id)
+        if own and own.located and (not self.trail or math.dist((own.x, own.y), self.trail[-1]) >= 2):
+            self.trail.append((own.x, own.y))
+        self.outline = list(outline)
+        points = self.outline or list(self.trail)
+        all_points = points + [(c.x, c.y) for c in cars]
+        if not all_points:
+            self.create_text(w/2, h/2, text='Ожидание позиций машин', fill='#8295aa', font=('Segoe UI', 12))
             return
-        cx, cy, spread = self._bounds_from_cars(coords)
-        scale = (min(self.width, self.height) * 0.42) / (spread * 1.4)
-
-        # контур трассы
-        if self.api_points and len(self.api_points) >= 4:
-            pts = []
-            for p in self.api_points:
-                sx, sy = self.world_to_screen(p[0], p[1], cx, cy, scale)
-                pts.extend([sx, sy])
-            pts += pts[:2]
-            c.create_line(pts, fill="#1e2c3c", width=12, smooth=True, joinstyle="round")
-            c.create_line(pts, fill="#2c4058", width=7, smooth=True, joinstyle="round")
-            c.create_line(pts, fill="#3a5574", width=2, smooth=True, dash=(6, 4))
+        xs, ys = zip(*all_points)
+        limits = (min(xs), min(ys), max(xs), max(ys))
+        if self.outline or self.bounds is None:
+            self.bounds = limits
         else:
-            self._draw_cloud(c, coords, cx, cy, scale)
+            a, b, c, d = self.bounds
+            self.bounds = (min(a, limits[0]), min(b, limits[1]), max(c, limits[2]), max(d, limits[3]))
+        a, b, c, d = self.bounds
+        cx, cy = (a+c)/2, (b+d)/2
+        scale = min((w-50)/max(50, c-a), (h-70)/max(50, d-b)) * self.zoom
 
-        # след локальной машины
-        if s.local_idx < len(coords):
-            wx, wy, wz = coords[s.local_idx]
-            sx, sy = self.world_to_screen(wx, wy, cx, cy, scale)
-            if not self.trail or math.hypot(sx - self.trail[-1][0], sy - self.trail[-1][1]) > 2:
-                self.trail.append((sx, sy))
-                if len(self.trail) > 240:
-                    self.trail.pop(0)
-            flat = [v for p in self.trail for v in p]
-            if len(flat) >= 4:
-                c.create_line(flat, fill="#ffd24a33"[:7], width=2)
+        def project(x, y):
+            return w/2 + (x-cx)*scale, h/2 - (y-cy)*scale
 
-        # машины: сначала соперники, локальная поверх
-        items = []
-        for idx in range(len(coords)):
-            wx, wy, wz = coords[idx]
-            sx, sy = self.world_to_screen(wx, wy, cx, cy, scale)
-            ang = self._angle(idx, coords)
-            is_local = (idx == s.local_idx)
-            color = "#ffd24a" if is_local else self._class_color(idx, s)
-            items.append((idx, sx, sy, ang, color, is_local))
-        for it in items:
-            if not it[5]:
-                self._draw_car(c, it[1], it[2], it[3], it[4], False, "")
-        for it in items:
-            if it[5]:
-                self._draw_car(c, it[1], it[2], it[3], it[4], True, "YOU")
-
-        # подписи дистанции до ближайших соперников
-        self._draw_gaps(c, coords, cx, cy, scale)
-
-        c.create_text(10, 12, anchor="w", text=s.track_name,
-                      fill="#8fa3b8", font=("Consolas", 10, "bold"))
-        c.create_text(self.width - 10, 12, anchor="e",
-                      text=f"zoom {self.zoom:.1f}x  (колесо мыши)",
-                      fill="#42536a", font=("Consolas", 8))
-
-    def _draw_cloud(self, c, coords, cx, cy, scale):
-        all_pts = []
-        for wx, wy, wz in coords:
-            sx, sy = self.world_to_screen(wx, wy, cx, cy, scale)
-            all_pts.append((sx, sy))
-        flat = [v for p in all_pts for v in p]
-        if len(flat) >= 4:
-            c.create_line(flat, fill="#16202c", width=16, smooth=True, capstyle="round")
-            c.create_line(flat, fill="#1f2e3f", width=9, smooth=True, capstyle="round")
-
-    def _angle(self, idx, coords):
-        s = self.store
-        vx = vy = None
-        if idx < len(s.car_vel_x) and idx < len(s.car_vel_y):
-            vx, vy = s.car_vel_x[idx], s.car_vel_y[idx]
-        if vx is None or (vx == 0 and vy == 0):
-            cur = coords[idx]
-            nxt = coords[(idx + 1) % len(coords)]
-            dx, dy = nxt[0] - cur[0], nxt[1] - cur[1]
-        else:
-            dx, dy = vx, vy
-        a = math.degrees(math.atan2(dy, dx))
-        return -a  # инверсия оси Y экрана
-
-    def _class_color(self, idx, s):
-        cls = ""
-        if idx < len(s.car_classes):
-            cls = s.car_classes[idx].upper()
-        if "AM" in cls and "PRO-AM" not in cls:
-            return "#4ac8ff"
-        if "PRO-AM" in cls or "SILVER" in cls:
-            return "#9ee84a"
-        return "#dfe6ee"
-
-    def _draw_car(self, c, x, y, ang, color, is_local, label):
-        L = 16 if is_local else 11
-        W = 8 if is_local else 6
-        rad = math.radians(ang)
-        ca, sa = math.cos(rad), math.sin(rad)
-        pts = [(-L/2, -W/2), (L/2, -W*0.35), (L/2, W*0.35), (-L/2, W/2)]
-        screen = []
-        for px, py in pts:
-            rx = px * ca - py * sa
-            ry = px * sa + py * ca
-            screen.extend([x + rx, y + ry])
-        outline = "#ffffff" if is_local else "#0b0f15"
-        c.create_polygon(screen, fill=color, outline=outline,
-                         width=2 if is_local else 1)
-        if is_local:
-            c.create_oval(x-18, y-18, x+18, y+18, outline="#ffd24a", width=1)
-            c.create_text(x, y-26, text=label, fill="#ffd24a",
-                          font=("Consolas", 9, "bold"))
-
-    def _draw_gaps(self, c, coords, cx, cy, scale):
-        s = self.store
-        if s.local_idx >= len(coords):
-            return
-        lx, ly = coords[s.local_idx][0], coords[s.local_idx][1]
-        sx, sy = self.world_to_screen(lx, ly, cx, cy, scale)
-        dists = []
-        for idx, (wx, wy, wz) in enumerate(coords):
-            if idx == s.local_idx:
-                continue
-            d = math.hypot(wx - lx, wy - ly) / 1000.0
-            dists.append((d, idx))
-        dists.sort()
-        for d, idx in dists[:3]:
-            wx, wy, wz = coords[idx]
-            tx, ty = self.world_to_screen(wx, wy, cx, cy, scale)
-            label = f"{d:.0f} m" if d > 3 else f"{d:.1f} m"
-            c.create_line(sx, sy, tx, ty, fill="#33465c", dash=(2, 3))
-            c.create_text(tx, ty - 14, text=label, fill="#9fb2c6",
-                          font=("Consolas", 8))
+        if len(points) > 1:
+            drawn = points + points[:1] if self.outline else points
+            flat = [v for p in drawn for v in project(*p)]
+            self.create_line(flat, fill='#243b53', width=9 if self.outline else 3, joinstyle='round')
+        if self.outline and len(self.trail) > 1:
+            flat = [v for p in self.trail for v in project(*p)]
+            self.create_line(flat, fill='#7a7037', width=2)
+        for car in sorted(cars, key=lambda c: c.car_id == state.selected_id):
+            x, y = project(car.x, car.y)
+            own = car.car_id == state.selected_id
+            color = '#ffd24a' if own else '#69c3f0' if car.in_pit else '#d4dfeb'
+            r = 7 if own else 4
+            self.create_oval(x-r, y-r, x+r, y+r, fill=color, outline='#0b0f15')
+            self.create_text(x, y-14, text=('ВЫ' if state.player_id >= 0 else 'ФОКУС') if own
+                             else str(car.position or car.car_id), fill=color, font=('Consolas', 9))
+        subtitle = 'Контур трассы' if self.outline else 'Записанный след (не готовый контур)'
+        self.create_text(10, 12, anchor='w', text=state.track, fill='#d4dfeb', font=('Consolas', 11, 'bold'))
+        self.create_text(10, h-14, anchor='w', text=subtitle, fill='#8295aa', font=('Segoe UI', 9))
+        self.create_text(w-10, 12, anchor='e', text=f'{self.zoom:.1f}x', fill='#8295aa')
