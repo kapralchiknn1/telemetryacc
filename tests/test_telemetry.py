@@ -309,6 +309,20 @@ class DemoAndConfigTests(unittest.TestCase):
                 args = parse_args(['--port', '9012'])
                 self.assertEqual((args.port, args.password), (9012, 'local-test'))
 
+    def test_broken_default_config_does_not_block_window_startup(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            path = home / 'Documents' / 'Assetto Corsa Competizione' / 'Config' / 'broadcasting.json'
+            path.parent.mkdir(parents=True)
+            for contents in ['{broken', '{"updListenerPort":0}', '{"updListenerPort":"disabled"}',
+                             '{"connectionPassword":null}']:
+                path.write_text(contents, encoding='utf-8')
+                with patch('acc_telemetry.config.Path.home', return_value=home):
+                    with patch.dict(os.environ, {}, clear=True):
+                        args = parse_args([])
+                        self.assertEqual(args.port, 9000)
+                        self.assertTrue(args.startup_warning)
+
     def test_invalid_config_does_not_leak_secrets(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'config.json'

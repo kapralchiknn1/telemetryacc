@@ -22,10 +22,16 @@ if os.name == 'nt':
         config.write_text(json.dumps({'updListenerPort': 9000, 'connectionPassword': ''}), encoding='utf-8')
         env = dict(os.environ, LOCALAPPDATA=str(test_dir))
         # Neither test runs from the source directory: imports/resources must be bundled.
-        for mode in ('demo', 'live'):
+        default_dir = test_dir / 'Documents' / 'Assetto Corsa Competizione' / 'Config'
+        default_dir.mkdir(parents=True)
+        (default_dir / 'broadcasting.json').write_text('{"updListenerPort":0}', encoding='utf-8')
+        env['USERPROFILE'] = env['HOME'] = str(test_dir)
+        for mode in ('demo', 'live', 'disabled-default-config'):
             report = test_dir / (mode + '.json')
             command = [str(Path(DISTPATH) / 'acc_telemetry.exe'), '--smoke-test',
-                       '--smoke-report', str(report), '--config', str(config)]
+                       '--smoke-report', str(report)]
+            if mode != 'disabled-default-config':
+                command += ['--config', str(config)]
             if mode == 'demo':
                 command.append('--demo')
             process = subprocess.Popen(command, cwd=test_dir, env=env)

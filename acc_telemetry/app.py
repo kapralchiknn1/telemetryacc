@@ -37,6 +37,7 @@ class Dashboard(tk.Tk):
         self.bind('<Escape>', lambda e: self.attributes('-fullscreen', False))
         self.store = TelemetryStore()
         self.feeds = FeedController(self.store, args.host, args.port, args.password)
+        self.startup_warning = args.startup_warning
         self.custom_outline = None
         self.outline_key = None
         self.outline = []
@@ -151,6 +152,10 @@ class Dashboard(tk.Tk):
         except RuntimeError as exc:
             messagebox.showerror('Источник данных', str(exc), parent=self)
             return
+        if not demo and self.startup_warning:
+            logging.warning(self.startup_warning)
+            with self.store.lock:
+                self.store.state.broadcast_error = self.startup_warning
         self.map.reset()
         self.outline_key = None
         self.rival.selected = None
