@@ -31,6 +31,36 @@ class DashboardSmokeTests(unittest.TestCase):
             app.positions.tree.selection_set('10')
             app.update()
             self.assertEqual(app.rival.selected, 10)
+            from types import SimpleNamespace
+            from acc_telemetry.track_map import REFERENCE_TRACK
+            state = app.store.snapshot()
+            app.map.render(state, REFERENCE_TRACK)
+            player_id = state.player_id
+            app.map.follow_player()
+            app.map.render(state, REFERENCE_TRACK)
+            own = state.cars[player_id]
+            self.assertAlmostEqual(app.map.camera.project(own.x, own.y)[0], app.map.winfo_width()/2)
+            self.assertTrue(app.follow_var.get())
+            app.map._drag_start(SimpleNamespace(x=100, y=80))
+            app.map._drag_move(SimpleNamespace(x=170, y=120))
+            app.map._drag_end(SimpleNamespace(x=170, y=120))
+            self.assertFalse(app.follow_var.get())
+            self.assertFalse(app.map.camera.follow)
+            panned = app.map.camera.center
+            app.map.render(state, REFERENCE_TRACK)
+            self.assertEqual(app.map.camera.center, panned)
+            app.map.follow_car(10)
+            state.cars[10].x += 2000
+            app.map.render(state, REFERENCE_TRACK)
+            self.assertEqual(app.map.camera.center, (state.cars[10].x, state.cars[10].y))
+            self.assertEqual(state.player_id, player_id)  # observing never changes physical telemetry
+            app.map.fit_all()
+            self.assertFalse(app.follow_var.get())
+            self.assertAlmostEqual(app.map.zoom, 1)
+            app.map.follow_car(9999)
+            app.map.render(state, REFERENCE_TRACK)
+            self.assertIsNone(app.map.target_position)
+            app.map.fit_all()
             app.toggle_fs()
             app.toggle_fs()
             app.geometry('1100x760')

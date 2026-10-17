@@ -1,64 +1,152 @@
-"""World-coordinate map. Outlines are real data or explicitly a recorded driving trail."""
+"""World-coordinate map with drag/zoom and local/team-car following."""
 import math
 import tkinter as tk
 from collections import deque
+from acc_telemetry.camera import MapCamera
 
 
 class TrackMap(tk.Canvas):
-    def __init__(self, master, **kw):
+    def __init__(self, master, on_view_change=None, **kw):
         super().__init__(master, bg='#0b0f15', highlightthickness=0, width=500, height=350, **kw)
-        self.zoom = 1.0
+        self.camera = MapCamera()
+        self.on_view_change = on_view_change
         self.outline = []
         self.trail = deque(maxlen=10000)
         self.key = None
+        self.trail_target = None
         self.bounds = None
-        self.bind('<MouseWheel>', lambda e: self.wheel(1.1 if e.delta > 0 else 1 / 1.1))
-        self.bind('<Button-4>', lambda e: self.wheel(1.1))
-        self.bind('<Button-5>', lambda e: self.wheel(1 / 1.1))
-        self.bind('<Double-Button-1>', lambda e: self.reset_zoom())
+        self.target_id = None  # None = local player, or clearly labelled UDP focus
+        self.target_position = None
+        self.target_name = ''
+        self.notice = ''
+        self.drag_origin = None
+        self.bind('<MouseWheel>', self._mouse_wheel)
+        self.bind('<Button-4>', lambda e: self.wheel(1.15, e.x, e.y))
+        self.bind('<Button-5>', lambda e: self.wheel(1 / 1.15, e.x, e.y))
+        self.bind('<ButtonPress-1>', self._drag_start)
+        self.bind('<B1-Motion>', self._drag_move)
+        self.bind('<ButtonRelease-1>', self._drag_end)
+        self.bind('<Double-Button-1>', lambda e: self.fit_all())
 
-    def wheel(self, factor):
-        self.zoom = max(.4, min(5, self.zoom * factor))
+    @property
+    def zoom(self):
+        return self.camera.zoom
+
+    def _changed(self):
+        if self.on_view_change:
+            self.on_view_change(self.camera.follow)
+
+    def _mouse_wheel(self, event):
+        if event.delta:
+            # Windows wheel detents are 120; fractional trackpad input still works.
+            steps = max(-4, min(4, event.delta / 120))
+            if abs(steps) < 1:
+                steps = 1 if steps > 0 else -1
+            self.wheel(1.15 ** steps, event.x, event.y)
+        return 'break'
+
+    def wheel(self, factor, x=None, y=None):
+        self.camera.wheel(factor, x, y)
+        self.notice = ''
+        self._changed()
+
+    def fit_all(self):
+        self.camera.fit_all()
+        self.notice = ''
+        self._changed()
 
     def reset_zoom(self):
-        self.zoom = 1.0
+        self.fit_all()
+
+    def set_follow(self, enabled):
+        self.camera.set_follow(enabled, self.target_position)
+        self.notice = ''
+        self._changed()
+
+    def follow_player(self):
+        self.target_id = None
+        self.target_position = None  # never briefly center a previously selected rival
+        self.camera.focus()
+        self.notice = ''
+        self._changed()
+
+    def follow_car(self, car_id):
+        if car_id is None:
+            self.notice = 'Сначала выберите пилота в таблице'
+            return
+        self.target_id = car_id
+        self.target_position = None
+        self.camera.focus()
+        self.notice = ''
+        self._changed()
+
+    def _drag_start(self, event):
+        self.drag_origin = event.x, event.y
+        self.configure(cursor='fleur')
+
+    def _drag_move(self, event):
+        if self.drag_origin is None:
+            return
+        x, y = self.drag_origin
+        dx, dy = event.x - x, event.y - y
+        if dx or dy:
+            self.camera.pan(dx, dy)
+            self.notice = ''
+            self.drag_origin = event.x, event.y
+            self._changed()
+        return 'break'
+
+    def _drag_end(self, event):
+        self.drag_origin = None
+        self.configure(cursor='')
 
     def reset(self):
         self.key = None
         self.trail.clear()
+        self.trail_target = None
         self.bounds = None
+        self.camera = MapCamera()
+        self.target_id = self.target_position = None
+        self.target_name = self.notice = ''
+        self.drag_origin = None
+        self._changed()
 
     def render(self, state, outline=()):
         self.delete('all')
         w, h = max(10, self.winfo_width()), max(10, self.winfo_height())
-        key = (state.track, state.demo, state.selected_id)
+        key = (state.track, state.demo)
         if key != self.key:
             self.reset()
             self.key = key
         cars = [c for c in state.cars.values() if c.located]
-        own = state.cars.get(state.selected_id)
-        if own and own.located and (not self.trail or math.dist((own.x, own.y), self.trail[-1]) >= 2):
-            self.trail.append((own.x, own.y))
+        observed_id = state.selected_id if self.target_id is None else self.target_id
+        observed = state.cars.get(observed_id)
+        if self.trail_target != observed_id:
+            self.trail.clear()
+            self.trail_target = observed_id
+        self.target_position = (observed.x, observed.y) if observed and observed.located else None
+        if self.target_id is not None:
+            self.target_name = (observed.name or f'Car {observed_id}') if observed else f'Car {observed_id}'
+        else:
+            self.target_name = 'Свой пилот' if state.player_id >= 0 else 'Фокус UDP (игрок не определён)'
+        if self.target_position and (not self.trail or math.dist(self.target_position, self.trail[-1]) >= 2):
+            self.trail.append(self.target_position)
         self.outline = list(outline)
         points = self.outline or list(self.trail)
         all_points = points + [(c.x, c.y) for c in cars]
-        if not all_points:
+        if all_points:
+            xs, ys = zip(*all_points)
+            limits = min(xs), min(ys), max(xs), max(ys)
+            if self.outline or self.bounds is None:
+                self.bounds = limits
+            else:
+                a, b, c, d = self.bounds
+                self.bounds = min(a, limits[0]), min(b, limits[1]), max(c, limits[2]), max(d, limits[3])
+        if self.bounds is None:
             self.create_text(w/2, h/2, text='Ожидание позиций машин', fill='#8295aa', font=('Segoe UI', 12))
             return
-        xs, ys = zip(*all_points)
-        limits = (min(xs), min(ys), max(xs), max(ys))
-        if self.outline or self.bounds is None:
-            self.bounds = limits
-        else:
-            a, b, c, d = self.bounds
-            self.bounds = (min(a, limits[0]), min(b, limits[1]), max(c, limits[2]), max(d, limits[3]))
-        a, b, c, d = self.bounds
-        cx, cy = (a+c)/2, (b+d)/2
-        scale = min((w-50)/max(50, c-a), (h-70)/max(50, d-b)) * self.zoom
-
-        def project(x, y):
-            return w/2 + (x-cx)*scale, h/2 - (y-cy)*scale
-
+        self.camera.update(self.bounds, w, h, self.target_position)
+        project = self.camera.project
         if len(points) > 1:
             drawn = points + points[:1] if self.outline else points
             flat = [v for p in drawn for v in project(*p)]
@@ -66,15 +154,24 @@ class TrackMap(tk.Canvas):
         if self.outline and len(self.trail) > 1:
             flat = [v for p in self.trail for v in project(*p)]
             self.create_line(flat, fill='#7a7037', width=2)
-        for car in sorted(cars, key=lambda c: c.car_id == state.selected_id):
+        for car in sorted(cars, key=lambda c: c.car_id == observed_id):
             x, y = project(car.x, car.y)
-            own = car.car_id == state.selected_id
+            if not (-40 <= x <= w + 40 and -40 <= y <= h + 40):
+                continue
+            own, watched = car.car_id == state.selected_id, car.car_id == observed_id
             color = '#ffd24a' if own else '#69c3f0' if car.in_pit else '#d4dfeb'
-            r = 7 if own else 4
+            r = 7 if own or watched else 4
             self.create_oval(x-r, y-r, x+r, y+r, fill=color, outline='#0b0f15')
-            self.create_text(x, y-14, text=('ВЫ' if state.player_id >= 0 else 'ФОКУС') if own
-                             else str(car.position or car.car_id), fill=color, font=('Consolas', 9))
+            if watched and self.camera.follow:
+                self.create_oval(x-13, y-13, x+13, y+13, outline='#67cfa0', width=2)
+            label = ('ВЫ' if state.player_id >= 0 else 'ФОКУС UDP') if own else (car.name[:20] if watched else str(car.position or car.car_id))
+            self.create_text(x, y-19, text=label, fill=color, font=('Consolas', 9))
         subtitle = 'Контур трассы' if self.outline else 'Записанный след (не готовый контур)'
+        mode = ('Слежение: ' + self.target_name if self.target_position else 'Ожидание выбранного пилота') if self.camera.follow else 'Обзор' if self.camera.overview else 'Свободная карта'
+        # HUD has an opaque background so off-screen parts of a zoomed track cannot obscure it.
+        self.create_rectangle(0, 0, w, 42, fill='#0b0f15', outline='')
+        self.create_rectangle(0, h-23, w, h, fill='#0b0f15', outline='')
         self.create_text(10, 12, anchor='w', text=state.track, fill='#d4dfeb', font=('Consolas', 11, 'bold'))
-        self.create_text(10, h-14, anchor='w', text=subtitle, fill='#8295aa', font=('Segoe UI', 9))
+        self.create_text(10, 31, anchor='w', text=self.notice or mode, fill='#67cfa0' if self.camera.follow else '#8295aa', font=('Segoe UI', 9))
+        self.create_text(10, h-12, anchor='w', text=subtitle, fill='#8295aa', font=('Segoe UI', 9))
         self.create_text(w-10, 12, anchor='e', text=f'{self.zoom:.1f}x', fill='#8295aa')

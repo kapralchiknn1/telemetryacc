@@ -94,9 +94,21 @@ class Dashboard(tk.Tk):
         main.columnconfigure(1, weight=4)
         main.rowconfigure(0, weight=3)
         main.rowconfigure(1, weight=2)
-        pm = self._panel(main, 'КАРТА · МЕТРЫ · КОЛЕСО МЫШИ — МАСШТАБ')
+        pm = self._panel(main, 'КАРТА · ПЕРЕМЕЩЕНИЕ И СЛЕЖЕНИЕ')
         pm.grid(row=0, column=0, sticky='nsew', padx=4, pady=4)
-        self.map = TrackMap(pm)
+        tools = ttk.Frame(pm)
+        tools.pack(fill='x', pady=(0, 4))
+        self.follow_var = tk.BooleanVar(value=False)
+        self.map = TrackMap(pm, on_view_change=self._map_view_changed)
+        ttk.Button(tools, text='Вся трасса', command=self.map.fit_all).pack(side='left', padx=(0, 4))
+        ttk.Button(tools, text='К своему', command=self.map.follow_player).pack(side='left', padx=(0, 4))
+        ttk.Button(tools, text='За выбранным', command=lambda: self.map.follow_car(self.rival.selected)).pack(side='left')
+        follow_tools = ttk.Frame(pm)
+        follow_tools.pack(fill='x', pady=(0, 2))
+        ttk.Checkbutton(follow_tools, text='Следить', variable=self.follow_var,
+                        command=lambda: self.map.set_follow(self.follow_var.get())).pack(side='left')
+        tk.Label(follow_tools, text='ЛКМ — сдвиг · колесо — масштаб', bg=PANEL, fg='#8295aa',
+                 font=('Segoe UI', 8)).pack(side='left', padx=8)
         self.map.pack(fill='both', expand=True)
         pp = self._panel(main, 'ПОЗИЦИИ · ОТСТАВАНИЕ / ИНТЕРВАЛ')
         pp.grid(row=0, column=1, rowspan=2, sticky='nsew', padx=4, pady=4)
@@ -142,6 +154,9 @@ class Dashboard(tk.Tk):
     def _resize(self, event):
         if event.widget is self:
             self.diagnostics.configure(wraplength=max(500, event.width - 24))
+
+    def _map_view_changed(self, follow):
+        self.follow_var.set(follow)
 
     def _select_rival(self, car_id):
         self.rival.selected = car_id
