@@ -1,0 +1,38 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Download project
+        uses: actions/checkout@v4
+        with:
+          ref: fix/acc-broadcasting-dashboard
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Install build tools
+        run: python -m pip install "pyinstaller>=6.11,<7"
+
+      - name: Build executable
+        run: pyinstaller --clean --noconfirm acc_telemetry.spec
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: acc_telemetry-windows
+          path: dist/acc_telemetry.exe
+          if-no-files-found: error
