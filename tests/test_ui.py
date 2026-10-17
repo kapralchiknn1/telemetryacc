@@ -33,6 +33,11 @@ class DashboardSmokeTests(unittest.TestCase):
             self.assertEqual(app.rival.selected, 10)
             from types import SimpleNamespace
             from acc_telemetry.track_map import REFERENCE_TRACK
+            # Map geometry is meaningful only after the test window is mapped.
+            app.deiconify()
+            app.update()
+            app.update_idletasks()
+            self.assertGreater(app.map.winfo_width(), 10)
             state = app.store.snapshot()
             app.map.render(state, REFERENCE_TRACK)
             player_id = state.player_id
