@@ -177,10 +177,13 @@ python -m compileall -q acc_telemetry tests
 проверяет настоящее окно, если доступны Tk и дисплей; иначе явно пропускается.
 В Linux его можно запускать через `xvfb-run`.
 
-GitHub Actions запускает тесты на Windows/Linux и Python 3.10/3.13.
-Отдельный workflow **Build Windows executable** запускается вручную и выдаёт
-`acc_telemetry.exe` как artifact. Факт наличия workflow сам по себе не означает,
-что Windows-сборка уже проверена.
+Шаблоны GitHub Actions находятся в `docs/workflow-examples/`: тесты на
+Windows/Linux и Python 3.10/3.13, а также ручная Windows-сборка exe с artifact.
+**Автоматизация пока не включена**: текущее подключение GitHub отклонило запись
+файлов в `.github/workflows/`. Владелец репозитория может вручную скопировать
+шаблоны в `.github/workflows/` и закоммитить их с нужными разрешениями.
+После этого workflow **Build Windows executable** запускается вручную.
+Наличие шаблонов само по себе не означает, что Windows-сборка уже проверена.
 
 ## Сборка .exe — только на Windows
 
@@ -208,6 +211,7 @@ acc_telemetry/
   widgets/            # карта, таблица, приборы и 2D-схема
 tracks/               # пользовательские контуры + demo.json
 tests/               # unit, integration и Tk smoke-test
+docs/workflow-examples/ # шаблоны CI/сборки (не активированы)
 acc_telemetry.spec    # рецепт Windows exe
 ```
 
