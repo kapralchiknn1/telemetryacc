@@ -1,297 +1,216 @@
-# -*- coding: utf-8 -*-
-"""
-ACC Telemetry Dashboard — мониторинг телеметрии Assetto Corsa Competizione.
-
-Отображает: позицию пилота и соперников, модели машин, карту трассы с точками
-позиций, скорость ветра, температуру асфальта, скорость машины, температуры
-шин, обороты двигателя, передачу, топливо, круги и лучшее время круга.
-
-Данные читаются из UDP-потока ACC (настраивается в игре:
-Settings -> Custom -> UDP Telemetry: IP 127.0.0.1, порт 9000, все пакеты).
-
-Режимы:
-  • Реальный — слушает UDP-порт и ждёт данные от запущенной игры.
-  • Демо     — встроенный генератор пакетов ACC для проверки интерфейса.
-
-Запуск: acc_telemetry.exe [--demo] [--port 9000] [--fullscreen]
-"""
-
-import argparse
-import os
+"""ACC desktop dashboard. Works as a script, python -m package, or PyInstaller exe."""
+from pathlib import Path
 import sys
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from acc_udp import TelemetryStore, ACCUDPReader          # noqa: E402
-from widgets.track_map import TrackMap                    # noqa: E402
-from widgets.car_model import RivalModelPanel             # noqa: E402
-from widgets.panels import SpeedDial, TyrePanel, WindRose, PositionList, WeatherBar  # noqa: E402
+from acc_telemetry.config import parse_args
+from acc_telemetry.model import TelemetryStore, fmt_ms
+from acc_telemetry.feeds import FeedController
+from acc_telemetry.track_map import REFERENCE_TRACK, load_track
+from acc_telemetry.widgets.track_map import TrackMap
+from acc_telemetry.widgets.car_model import RivalModelPanel
+from acc_telemetry.widgets.panels import SpeedDial, TyrePanel, WindRose, PositionList, value
 
-APP_TITLE = "ACC Telemetry Dashboard"
-BG = "#0b0f15"
-PANEL = "#10151c"
-BORDER = "#2a3644"
+BG, PANEL, FG = '#0b0f15', '#101b28', '#d4dfeb'
 
 
-def resource_path(rel):
-    """Путь к ресурсу внутри PyInstaller bundle."""
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, rel)
+def resource_path(relative):
+    base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent))
+    return base / relative
 
 
 class Dashboard(tk.Tk):
-    def __init__(self, port=9000, demo=False, fullscreen=False):
+    def __init__(self, args):
         super().__init__()
-        self.title(APP_TITLE)
+        self.title('ACC Telemetry Dashboard')
+        self.geometry('1440x920')
+        self.minsize(1100, 760)
         self.configure(bg=BG)
-        self.geometry("1280x800")
-        self.minsize(1024, 680)
+        self.attributes('-fullscreen', args.fullscreen)
+        self.bind('<Escape>', lambda e: self.attributes('-fullscreen', False))
         self.store = TelemetryStore()
-        self.port = port
-        self.demo = demo
-        self.reader = None
-        self.demo_gen = None
-
-        if fullscreen:
-            self.attributes("-fullscreen", True)
-        try:
-            icon = resource_path(os.path.join("assets", "app_icon.ico"))
-            if os.path.exists(icon):
-                self.iconbitmap(icon)
-        except Exception:
-            pass
-
+        self.feeds = FeedController(self.store, args.host, args.port, args.password)
+        self.custom_outline = None
+        self.outline_key = None
+        self.outline = []
+        self.outline_error = ''
+        self.after_id = None
+        if args.track_map:
+            try:
+                self.custom_outline = load_track(args.track_map)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror('Контур трассы', str(exc), parent=self)
         self._build_style()
         self._build_ui()
-        self._start_feed()
+        self.protocol('WM_DELETE_WINDOW', self._close)
+        self._switch(args.demo)
+        self._tick()
 
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(30, self._tick)
-
-    # ---------- стиль ----------
     def _build_style(self):
         style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(".", background=PANEL, foreground="#cfd8e3")
-        style.configure("TFrame", background=PANEL)
-        style.configure("TLabelframe", background=PANEL, bordercolor=BORDER)
-        style.configure("TLabelframe.Label", background=PANEL, foreground="#8fa3b8",
-                        font=("Consolas", 9, "bold"))
-        style.configure("TButton", background="#1d2836", foreground="#cfd8e3",
-                        bordercolor=BORDER, focuscolor="#1d2836", font=("Consolas", 9))
-        style.map("TButton", background=[("active", "#2a3a4e")])
+        style.theme_use('clam')
+        style.configure('TFrame', background=PANEL)
+        style.configure('TLabelframe', background=PANEL)
+        style.configure('TLabelframe.Label', background=PANEL, foreground=FG, font=('Segoe UI', 10, 'bold'))
+        style.configure('TButton', background='#24394f', foreground=FG, padding=6)
+        style.map('TButton', background=[('active', '#355477')])
+        style.configure('Treeview', background=BG, fieldbackground=BG, foreground=FG,
+                        rowheight=28, font=('Segoe UI', 9))
+        style.configure('Treeview.Heading', background='#24394f', foreground=FG)
+        style.map('Treeview', background=[('selected', '#324863')])
 
-    def _panel(self, parent, text):
-        return ttk.Labelframe(parent, text=text, padding=6)
+    def _panel(self, parent, title):
+        return ttk.LabelFrame(parent, text=title, padding=6)
 
-    # ---------- UI ----------
     def _build_ui(self):
-        # верхняя строка: статус + погода + управление
         top = tk.Frame(self, bg=PANEL)
-        top.pack(fill="x", padx=8, pady=(8, 4))
-
-        self.lbl_status = tk.Label(top, text="● OFFLINE", bg=PANEL, fg="#e74c3c",
-                                   font=("Consolas", 12, "bold"))
-        self.lbl_status.pack(side="left", padx=8)
-
-        self.lbl_rate = tk.Label(top, text="", bg=PANEL, fg="#4a5c70",
-                                 font=("Consolas", 9))
-        self.lbl_rate.pack(side="left", padx=6)
-
-        self.weather = WeatherBar(top, self.store)
-        self.weather.pack(side="left", padx=18)
-
-        btns = tk.Frame(top, bg=PANEL)
-        btns.pack(side="right")
-        self.btn_demo = ttk.Button(btns, text="▶ Демо-режим", command=self.toggle_demo)
-        self.btn_demo.pack(side="right", padx=4)
-        ttk.Button(btns, text="⟳ Переподключить", command=self.reconnect).pack(side="right", padx=4)
-        ttk.Button(btns, text="⛶ Полный экран", command=self.toggle_fs).pack(side="right", padx=4)
-
-        # основная сетка
+        top.pack(fill='x', padx=8, pady=8)
+        self.status = tk.Label(top, bg=PANEL, fg=FG, font=('Segoe UI', 11, 'bold'))
+        self.status.pack(side='left', padx=8)
+        self.demo_button = ttk.Button(top, text='Демо', command=lambda: self._switch(not self.feeds.demo))
+        self.demo_button.pack(side='right', padx=4)
+        ttk.Button(top, text='Переподключить', command=lambda: self._switch(self.feeds.demo)).pack(side='right', padx=4)
+        ttk.Button(top, text='Полный экран', command=self.toggle_fs).pack(side='right', padx=4)
+        self.weather = tk.Label(self, bg=BG, fg='#69c3f0', font=('Segoe UI', 11), anchor='w')
+        self.weather.pack(fill='x', padx=16, pady=(0, 6))
         main = tk.Frame(self, bg=BG)
-        main.pack(fill="both", expand=True, padx=8, pady=4)
+        main.pack(fill='both', expand=True, padx=8)
         main.columnconfigure(0, weight=3)
-        main.columnconfigure(1, weight=2)
-        main.columnconfigure(2, weight=2)
+        main.columnconfigure(1, weight=4)
         main.rowconfigure(0, weight=3)
         main.rowconfigure(1, weight=2)
-
-        # карта трассы
-        p_map = self._panel(main, "КАРТА ТРАССЫ · ПОЗИЦИИ НА СЕССИИ")
-        p_map.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        self.map = TrackMap(p_map, self.store, width=520, height=380)
-        self.map.pack(fill="both", expand=True)
-
-        # список позиций
-        p_pos = self._panel(main, "ПОЗИЦИИ ПИЛОТОВ")
-        p_pos.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=4, pady=4)
-        self.plist = PositionList(p_pos, self.store, width=280, height=560)
-        self.plist.pack(fill="both", expand=True)
-
-        # правая колонка: модель соперника + шины
-        p_riv = self._panel(main, "МОДЕЛЬ СОПЕРНИКА")
-        p_riv.grid(row=0, column=2, sticky="nsew", padx=4, pady=4)
-        self.riv_canvas = tk.Canvas(p_riv, bg="#0b0f15", highlightthickness=0, height=200)
-        self.riv_canvas.pack(fill="both", expand=True)
-        self.rival = RivalModelPanel(self.riv_canvas, self.store)
-
-        p_tyres = self._panel(main, "ШИНЫ · ТЕМПЕРАТУРА")
-        p_tyres.grid(row=1, column=2, sticky="nsew", padx=4, pady=4)
-        self.tyres = TyrePanel(p_tyres, self.store, width=260, height=210)
-        self.tyres.pack(fill="both", expand=True)
-
-        # нижний ряд: спидометр + ветер + доп. параметры
+        pm = self._panel(main, 'КАРТА · МЕТРЫ · КОЛЕСО МЫШИ — МАСШТАБ')
+        pm.grid(row=0, column=0, sticky='nsew', padx=4, pady=4)
+        self.map = TrackMap(pm)
+        self.map.pack(fill='both', expand=True)
+        pp = self._panel(main, 'ПОЗИЦИИ · ОТСТАВАНИЕ / ИНТЕРВАЛ')
+        pp.grid(row=0, column=1, rowspan=2, sticky='nsew', padx=4, pady=4)
+        self.positions = PositionList(pp, on_select=self._select_rival)
+        self.positions.pack(fill='both', expand=True)
+        below = tk.Frame(main, bg=BG)
+        below.grid(row=1, column=0, sticky='nsew', padx=4, pady=4)
+        below.columnconfigure((0, 1), weight=1)
+        below.rowconfigure(0, weight=1)
+        pr = self._panel(below, 'СОПЕРНИК')
+        pr.grid(row=0, column=0, sticky='nsew', padx=(0, 4))
+        self.rival_canvas = tk.Canvas(pr, bg=BG, highlightthickness=0, width=260, height=240)
+        self.rival_canvas.pack(fill='both', expand=True)
+        self.rival = RivalModelPanel(self.rival_canvas)
+        pt = self._panel(below, 'ШИНЫ · CORE °C / PSI')
+        pt.grid(row=0, column=1, sticky='nsew')
+        self.tyres = TyrePanel(pt)
+        self.tyres.pack(fill='both', expand=True)
         bottom = tk.Frame(self, bg=BG)
-        bottom.pack(fill="x", padx=8, pady=4)
-
-        p_speed = self._panel(bottom, "СКОРОСТЬ / ОБОРОТЫ")
-        p_speed.pack(side="left", padx=4)
-        self.dial = SpeedDial(p_speed, self.store, size=210)
+        bottom.pack(fill='x', padx=12, pady=6)
+        ps = self._panel(bottom, 'СВОЯ МАШИНА · SHARED MEMORY')
+        ps.pack(side='left', padx=(0, 6))
+        self.dial = SpeedDial(ps)
         self.dial.pack()
+        pw = self._panel(bottom, 'ВЕТЕР')
+        pw.pack(side='left', fill='y', padx=(0, 6))
+        self.wind = WindRose(pw)
+        self.wind.pack(fill='both', expand=True)
+        pe = self._panel(bottom, 'СЕССИЯ / СВОЯ МАШИНА')
+        pe.pack(side='left', fill='both', expand=True)
+        self.extra = tk.Label(pe, bg=PANEL, fg=FG, font=('Consolas', 12), justify='left', anchor='nw')
+        self.extra.pack(fill='both', expand=True, padx=8, pady=8)
+        self.diagnostics = tk.Label(self, bg=BG, fg='#8295aa', font=('Segoe UI', 9), anchor='w', wraplength=1380)
+        self.diagnostics.pack(side='bottom', fill='x', padx=12, pady=(0, 6))
+        # Reserve the fixed bottom panels BEFORE giving the map/table remaining space.
+        # Otherwise pack can clip the telemetry/footer on smaller desktop displays.
+        bottom.pack_forget()
+        main.pack_forget()
+        bottom.pack(side='bottom', fill='x', padx=12, pady=6)
+        main.pack(fill='both', expand=True, padx=8)
+        self.bind('<Configure>', self._resize)
 
-        p_wind = self._panel(bottom, "ВЕТЕР")
-        p_wind.pack(side="left", padx=4)
-        self.wind = WindRose(p_wind, self.store, size=150)
-        self.wind.pack()
+    def _resize(self, event):
+        if event.widget is self:
+            self.diagnostics.configure(wraplength=max(500, event.width - 24))
 
-        p_extra = self._panel(bottom, "МАШИНА")
-        p_extra.pack(side="left", fill="y", padx=4)
-        self.extra_grid = tk.Frame(p_extra, bg=PANEL)
-        self.extra_grid.pack(fill="both", expand=True, padx=6, pady=4)
-        self.extra_labels = {}
-        specs = [("КРУГ", "lap"), ("КРУГОВОЕ ВРЕМЯ", "cur"), ("ЛУЧШИЙ КРУГ", "best"),
-                 ("ТОПЛИВО", "fuel"), ("ПЕРЕДАЧА", "gear"), ("FASTER THAN", "delta"),
-                 ("DRS", "drs"), ("GAS / BRAKE", "gb")]
-        for i, (label, key) in enumerate(specs):
-            r, c = divmod(i, 2)
-            tk.Label(self.extra_grid, text=label, bg=PANEL, fg="#4a5c70",
-                     font=("Consolas", 8)).grid(row=r*2, column=c, sticky="w", padx=10)
-            v = tk.Label(self.extra_grid, text="--", bg=PANEL, fg="#cfd8e3",
-                         font=("Consolas", 13, "bold"))
-            v.grid(row=r*2+1, column=c, sticky="w", padx=10)
-            self.extra_labels[key] = v
+    def _select_rival(self, car_id):
+        self.rival.selected = car_id
 
-    # ---------- форматирование времени ----------
-    @staticmethod
-    def fmt_ms(ms):
-        if ms <= 0:
-            return "--:--.---"
-        m = ms // 60000
-        s = (ms % 60000) / 1000.0
-        return f"{m}:{int(s):02d}.{(s % 1):06.3f}"[0:-1] if False else f"{m}:{int(s):02d}.{ms % 1000:03d}"
+    def _switch(self, demo):
+        try:
+            self.feeds.start(demo)
+        except RuntimeError as exc:
+            messagebox.showerror('Источник данных', str(exc), parent=self)
+            return
+        self.map.reset()
+        self.outline_key = None
+        self.rival.selected = None
+        self.demo_button.configure(text='Выйти из демо' if demo else 'Демо без игры')
 
-    # ---------- цикл обновления ----------
+    def _get_outline(self, state):
+        key = state.track, state.demo
+        if key != self.outline_key:
+            self.outline_key, self.outline, self.outline_error = key, [], ''
+            if state.demo:
+                self.outline = REFERENCE_TRACK
+            elif self.custom_outline is not None:
+                self.outline = self.custom_outline
+            else:
+                slug = ''.join(ch if ch.isascii() and ch.isalnum() else '_' for ch in state.track.lower())
+                path = resource_path('tracks') / (slug + '.json')
+                if path.is_file():
+                    try:
+                        self.outline = load_track(path)
+                    except (OSError, ValueError) as exc:
+                        self.outline_error = f'Контур не загружен: {exc}'
+        return self.outline
+
     def _tick(self):
-        s = self.store
-        # статус
-        st = s.status
-        if st == "CONNECTED":
-            self.lbl_status.config(text="● LIVE (ACC)", fg="#2ecc71")
-        elif st == "DEMO":
-            self.lbl_status.config(text="● DEMO FEED", fg="#f39c12")
-        else:
-            self.lbl_status.config(text="● OFFLINE", fg="#e74c3c")
-        self.lbl_rate.config(text=f"{s.packets_per_sec:.0f} pkt/s" if s.packets_per_sec else "")
-
-        self.weather.redraw()
-        self.dial.redraw()
-        self.tyres.redraw()
-        self.wind.redraw()
-        self.plist.redraw()
-        self.riv_canvas.update_idletasks()
-        self.rival.redraw()
-        self.map.redraw()
-
-        # доп. поля
-        lap = f"{s.current_lap}/{s.total_laps}" if s.total_laps else "--"
-        self.extra_labels["lap"].config(text=lap)
-        self.extra_labels["cur"].config(text=self.fmt_ms(int(s.lap_time_s * 1000)))
-        self.extra_labels["best"].config(text=self.fmt_ms(s.best_lap_ms))
-        self.extra_labels["fuel"].config(text=f"{s.fuel:.1f} kg")
-        gear = "R" if s.gear < 0 else ("N" if s.gear == 0 else str(s.gear))
-        self.extra_labels["gear"].config(text=gear)
-        pos_txt = f"P{s.pos}/{s.num_cars}" if s.pos else "--"
-        self.extra_labels["delta"].config(text=pos_txt)
-        self.extra_labels["drs"].config(text="ON" if s.drs else "OFF")
-        gi = min(s.local_idx, len(s.gas) - 1) if s.gas else -1
-        bi = min(s.local_idx, len(s.brake) - 1) if s.brake else -1
-        gb = ""
-        if gi >= 0 and bi >= 0:
-            gb = f"{s.gas[gi]*100:.0f}% / {s.brake[bi]*100:.0f}%"
-        self.extra_labels["gb"].config(text=gb or "--")
-
-        self.after(33, self._tick)
-
-    # ---------- управление потоком ----------
-    def _start_feed(self):
-        if self.demo:
-            from demo_feed import DemoGenerator
-            self.demo_gen = DemoGenerator(port=self.port, n_cars=12)
-            self.demo_gen.start()
-            self.store.status = "DEMO"
-            self.btn_demo.config(text="⏹ Стоп демо")
-        else:
-            self.store.status = "DISCONNECTED"
-            self.btn_demo.config(text="▶ Демо-режим")
-        self.reader = ACCUDPReader(self.store, host="0.0.0.0", port=self.port)
-        self.reader.start()
-
-    def toggle_demo(self):
-        if self.demo:
-            self.demo = False
-            if self.demo_gen:
-                self.demo_gen.stop()
-                self.demo_gen = None
-            self.store.status = "DISCONNECTED"
-            self.reader = ACCUDPReader(self.store, host="0.0.0.0", port=self.port)
-            self.reader.start()
-            self.btn_demo.config(text="▶ Демо-режим")
-        else:
-            if self.reader:
-                self.reader.stop()
-            self.demo = True
-            self._start_feed()
-
-    def reconnect(self):
-        if self.reader:
-            self.reader.stop()
-        self.reader = ACCUDPReader(self.store, host="0.0.0.0", port=self.port)
-        self.reader.start()
+        s = self.store.snapshot()
+        now = time.monotonic()
+        udp = now - s.broadcast_seen < 3
+        shared = now - s.shared_seen < 3
+        label = 'DEMO — ТЕСТОВЫЕ ДАННЫЕ' if s.demo else f'ACC: UDP {"ON" if udp else "OFF"} · MEMORY {"ON" if shared else "OFF"}'
+        self.status.config(text=label, fg='#ffc34f' if s.demo else '#67cfa0' if udp or shared else '#eb735b')
+        remaining = '--' if s.session_remaining_ms is None else f'{int(s.session_remaining_ms / 60000)} мин'
+        self.weather.config(text=f'{s.track}   ·   Воздух {value(s.air, " °C")}   ·   Асфальт {value(s.road, " °C")}   ·   '
+                                 f'Влажность {value(None if s.wetness is None else s.wetness * 100, "%", 0)}   ·   Осталось {remaining}')
+        self.map.render(s, self._get_outline(s))
+        self.positions.render(s)
+        self.rival.render(s)
+        self.dial.render(s)
+        self.tyres.render(s)
+        self.wind.render(s)
+        laps = f'{s.current_lap}' + (f'/{s.total_laps}' if s.total_laps else '') if s.current_lap else '--'
+        self.extra.config(text=f'Позиция: {s.position or "--"}     Круг: {laps}\n'
+                               f'Текущий: {fmt_ms(s.lap_ms)}\nЛучший:  {fmt_ms(s.best_ms)}\n'
+                               f'Топливо: {value(s.fuel, " л")}\n'
+                               f'Газ: {value(None if s.gas is None else s.gas * 100, "%", 0)}   '
+                               f'Тормоз: {value(None if s.brake is None else s.brake * 100, "%", 0)}')
+        notes = [] if s.demo else [s.broadcast_error, s.shared_error]
+        if not s.demo and not shared:
+            notes.append('Для шин, оборотов, топлива и ветра запустите приложение на Windows-ПК с игрой')
+        notes += [self.outline_error, '≈ — оценка по прохождению точек трассы; -- — данных пока нет. Схема машины условная.']
+        self.diagnostics.config(text=' · '.join(filter(None, notes)))
+        self.after_id = self.after(50, self._tick)
 
     def toggle_fs(self):
-        fs = not bool(self.attributes("-fullscreen")[1]) if self.attributes("-fullscreen") else True
-        self.attributes("-fullscreen", fs)
+        self.attributes('-fullscreen', not bool(self.attributes('-fullscreen')))
 
-    def _on_close(self):
+    def _close(self):
+        if self.after_id:
+            self.after_cancel(self.after_id)
+            self.after_id = None
         try:
-            if self.reader:
-                self.reader.stop()
-            if self.demo_gen:
-                self.demo_gen.stop()
+            self.feeds.stop()
         finally:
             self.destroy()
 
 
-def parse_args():
-    ap = argparse.ArgumentParser(description=APP_TITLE)
-    ap.add_argument("--demo", action="store_true", help="запустить с внутренним симулятором ACC")
-    ap.add_argument("--port", type=int, default=9000, help="UDP порт телеметрии (по умолчанию 9000)")
-    ap.add_argument("--fullscreen", action="store_true", help="полноэкранный режим")
-    return ap.parse_args()
-
-
 def main():
     args = parse_args()
-    app = Dashboard(port=args.port, demo=args.demo, fullscreen=args.fullscreen)
-    app.mainloop()
+    Dashboard(args).mainloop()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

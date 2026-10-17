@@ -1,1 +1,4 @@
-# Только стандартная библиотека (tkinter встроен в Python для Windows)
+# Runtime: Python >=3.10, standard library only.
+# Tkinter must be installed with Python (Windows: Tcl/Tk component).
+# Linux: install your distribution's python3-tk / python3-tkinter package.
+# Optional build tool: python -m pip install 'pyinstaller>=6.11,<7'
