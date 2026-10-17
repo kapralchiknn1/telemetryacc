@@ -293,6 +293,22 @@ class DemoAndConfigTests(unittest.TestCase):
             with patch.dict(os.environ, {'ACC_CONNECTION_PASSWORD': 'override'}):
                 self.assertEqual(parse_args(['--config', str(p)]).password, 'override')
 
+    def test_explicit_config_without_home_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'broadcasting.json'
+            path.write_text(json.dumps({'updListenerPort': 9011, 'connectionPassword': 'local-test'}), encoding='utf-8')
+            with patch('acc_telemetry.config.Path.home', side_effect=RuntimeError('No home')) as home:
+                with patch.dict(os.environ, {}, clear=True):
+                    args = parse_args(['--config', str(path)])
+                    self.assertEqual((args.port, args.password), (9011, 'local-test'))
+                home.assert_not_called()
+
+    def test_no_home_uses_cli_and_environment(self):
+        with patch('acc_telemetry.config.Path.home', side_effect=RuntimeError('No home')):
+            with patch.dict(os.environ, {'ACC_CONNECTION_PASSWORD': 'local-test'}, clear=True):
+                args = parse_args(['--port', '9012'])
+                self.assertEqual((args.port, args.password), (9012, 'local-test'))
+
     def test_invalid_config_does_not_leak_secrets(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'config.json'

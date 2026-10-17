@@ -15,9 +15,15 @@ def parse_args(argv=None):
     parser.add_argument('--fullscreen', action='store_true')
     args = parser.parse_args(argv)
     config = {}
-    default = Path.home() / 'Documents' / 'Assetto Corsa Competizione' / 'Config' / 'broadcasting.json'
-    path = args.config or default
-    if args.config or path.is_file():
+    # An explicit config must not depend on HOME/USERPROFILE. Headless Windows
+    # runners and deliberately isolated tests may have neither variable.
+    path = args.config
+    if path is None:
+        try:
+            path = Path.home() / 'Documents' / 'Assetto Corsa Competizione' / 'Config' / 'broadcasting.json'
+        except RuntimeError:
+            path = None  # no home directory: use CLI/environment/default values
+    if path is not None and (args.config or path.is_file()):
         try:
             config = json.loads(path.read_text(encoding='utf-8-sig'))
             if not isinstance(config, dict):
