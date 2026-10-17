@@ -69,7 +69,7 @@ class DashboardSmokeTests(unittest.TestCase):
             app.toggle_fs()
             app.toggle_fs()
             # Every pit-wall panel must remain inside the root at both layouts.
-            for geometry, expected_model in [('1100x760', False), ('1920x1080', True)]:
+            for geometry in ('1100x760', '1920x1080'):
                 app.geometry(geometry)
                 app.update()
                 app.update_idletasks()
@@ -82,7 +82,16 @@ class DashboardSmokeTests(unittest.TestCase):
                                          app.winfo_rootx()+app.winfo_width())
                     self.assertLessEqual(panel.winfo_rooty()+panel.winfo_height(),
                                          app.winfo_rooty()+app.winfo_height())
-                self.assertEqual('model' in app.positions.tree.cget('displaycolumns'), expected_model)
+                # Windows runners may clamp the requested width to their monitor.
+                self.assertEqual('model' in app.positions.tree.cget('displaycolumns'),
+                                 app.positions.winfo_width() >= 660)
+            # Exercise both layouts independently of the runner's display size.
+            from unittest.mock import patch
+            for width in (390, 700):
+                with patch.object(app.positions, 'winfo_width', return_value=width):
+                    app.positions._layout()
+                self.assertEqual('model' in app.positions.tree.cget('displaycolumns'), width >= 660)
+            app.positions._layout()
             app.geometry('1100x760')
             app._switch(True)
             app.update()
