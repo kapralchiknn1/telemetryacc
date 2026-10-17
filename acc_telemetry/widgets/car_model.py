@@ -2,6 +2,7 @@
 """Стилизованная 2D-схема GT-машины, не модель конкретной марки."""
 
 import math
+import tkinter.font as tkfont
 
 
 def draw_car_topdown(canvas, x, y, angle_deg, scale=1.0, body="#c0392b",
@@ -58,19 +59,25 @@ class RivalModelPanel:
         w, h = c.winfo_width(), c.winfo_height()
         own = state.cars.get(state.selected_id)
         rivals = [car for car in state.cars.values() if car.car_id != state.selected_id]
-        rival = state.cars.get(self.selected) if self.selected != state.selected_id else None
+        rival = state.cars.get(self.selected)
         if rival is None and rivals:
             nearby = [car for car in rivals if own and own.located and car.located]
             rival = (min(nearby, key=lambda car: math.hypot(car.x-own.x, car.y-own.y))
                      if nearby else rivals[0])
         if rival is None:
-            c.create_text(w/2, h/2, text="Нет данных о соперниках", fill="#8295aa")
+            c.create_text(w/2, h/2, text="Нет данных о соперниках", fill="#999999")
             return
-        draw_car_topdown(c, w/2, h*.30, 270, scale=min(1.8, h / 120), body="#69c3f0")
+        draw_car_topdown(c, w/2, h*.25, 270, scale=min(1.5, h / 160), body="#00d9ff")
         lines = [rival.name or f"Car {rival.car_id}", rival.model or "Модель неизвестна",
                  f"P{rival.position or '--'} · {rival.cup}" + (" · PIT" if rival.in_pit else "")]
         if own and own.located and rival.located:
             lines.append(f"По прямой: {math.hypot(rival.x-own.x, rival.y-own.y):.1f} м")
+        font = tkfont.Font(family='Consolas', size=10)
         for i, line in enumerate(lines):
-            c.create_text(w/2, h*.57+i*min(19, h*.10), text=line, fill="#d4dfeb", font=("Segoe UI", 10))
-        c.create_text(w/2, 12, text="2D-схема · выбор в таблице", fill="#8295aa", font=("Segoe UI", 9))
+            full = line
+            while font.measure(line) > w-20 and len(line)>1:
+                line = line[:-1]
+            if line != full:
+                line = line[:-2] + '…'
+            c.create_text(w/2, h*.52+i*22, text=line, fill="#eeeeee", font=("Consolas", 10), width=max(80, w-16))
+        c.create_text(w/2, h-15, text="Выбор — в таблице позиций", fill="#999999", font=("Consolas", 9))

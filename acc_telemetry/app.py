@@ -16,9 +16,9 @@ from acc_telemetry.feeds import FeedController
 from acc_telemetry.track_map import REFERENCE_TRACK, load_track
 from acc_telemetry.widgets.track_map import TrackMap
 from acc_telemetry.widgets.car_model import RivalModelPanel
-from acc_telemetry.widgets.panels import SpeedDial, TyrePanel, WindRose, PositionList, value
+from acc_telemetry.widgets.panels import SpeedDial, TyrePanel, WindRose, PositionList, PedalPanel, FuelPanel, TimingPanel, value
 
-BG, PANEL, FG = '#0b0f15', '#101b28', '#d4dfeb'
+BG, PANEL, FG = '#000000', '#0a0a0a', '#eeeeee'
 
 
 def resource_path(relative):
@@ -29,7 +29,7 @@ def resource_path(relative):
 class Dashboard(tk.Tk):
     def __init__(self, args):
         super().__init__()
-        self.title('ACC Telemetry Dashboard')
+        self.title('ACC PIT WALL — Telemetry')
         self.geometry('1440x920')
         self.minsize(1100, 760)
         self.configure(bg=BG)
@@ -64,91 +64,112 @@ class Dashboard(tk.Tk):
     def _build_style(self):
         style = ttk.Style(self)
         style.theme_use('clam')
+        style.configure('.', font=('Consolas', 10), background=PANEL, foreground=FG)
         style.configure('TFrame', background=PANEL)
-        style.configure('TLabelframe', background=PANEL)
-        style.configure('TLabelframe.Label', background=PANEL, foreground=FG, font=('Segoe UI', 10, 'bold'))
-        style.configure('TButton', background='#24394f', foreground=FG, padding=6)
-        style.map('TButton', background=[('active', '#355477')])
-        style.configure('Treeview', background=BG, fieldbackground=BG, foreground=FG,
-                        rowheight=28, font=('Segoe UI', 9))
-        style.configure('Treeview.Heading', background='#24394f', foreground=FG)
-        style.map('Treeview', background=[('selected', '#324863')])
+        style.configure('TButton', background='#161616', foreground=FG, padding=(8, 6), borderwidth=1, relief='flat')
+        style.map('TButton', background=[('active', '#303030'), ('pressed', '#404040')], foreground=[('disabled', '#777777')])
+        style.configure('TCheckbutton', background=PANEL, foreground=FG, padding=4)
+        style.map('TCheckbutton', background=[('active', '#222222')])
+        style.configure('Treeview', background=PANEL, fieldbackground=PANEL, foreground=FG,
+                        rowheight=28, font=('Consolas', 10), borderwidth=0)
+        style.configure('Treeview.Heading', background='#161616', foreground='#b0b0b0', font=('Consolas', 9), padding=(3, 6), relief='flat')
+        style.map('Treeview', background=[('selected', '#15363c')], foreground=[('selected', '#ffffff')])
+        style.map('Treeview.Heading', background=[('active', '#282828')])
+        style.configure('TScrollbar', background='#303030', troughcolor='#0d0d0d', bordercolor='#1a1a1a', arrowcolor='#aaaaaa')
 
     def _panel(self, parent, title):
-        return ttk.LabelFrame(parent, text=title, padding=6)
+        shell = tk.Frame(parent, bg=PANEL, highlightbackground='#2a2a2a', highlightthickness=1)
+        tk.Label(shell, text=title, bg='#161616', fg='#aaaaaa', font=('Consolas', 9), anchor='w', padx=10, pady=5).pack(fill='x')
+        body = tk.Frame(shell, bg=PANEL)
+        body.pack(fill='both', expand=True)
+        body.shell = shell
+        return body
 
     def _build_ui(self):
-        top = tk.Frame(self, bg=PANEL)
-        top.pack(fill='x', padx=8, pady=8)
-        self.status = tk.Label(top, bg=PANEL, fg=FG, font=('Segoe UI', 11, 'bold'))
-        self.status.pack(side='left', padx=8)
+        self.rowconfigure(2, weight=1)
+        self.columnconfigure(0, weight=1)
+        top = tk.Frame(self, bg=PANEL, highlightbackground='#2a2a2a', highlightthickness=1)
+        top.grid(row=0, column=0, sticky='ew', padx=2, pady=(2, 0))
+        tk.Label(top, text='● ACC PIT WALL', bg=PANEL, fg='#ff4545', font=('Consolas', 13, 'bold'), padx=12).pack(side='left')
+        self.status = tk.Label(top, bg=PANEL, fg=FG, font=('Consolas', 10, 'bold'))
+        self.status.pack(side='left', padx=10)
         self.demo_button = ttk.Button(top, text='Демо', command=lambda: self._switch(not self.feeds.demo))
-        self.demo_button.pack(side='right', padx=4)
-        ttk.Button(top, text='Переподключить', command=lambda: self._switch(self.feeds.demo)).pack(side='right', padx=4)
-        ttk.Button(top, text='Полный экран', command=self.toggle_fs).pack(side='right', padx=4)
-        self.weather = tk.Label(self, bg=BG, fg='#69c3f0', font=('Segoe UI', 11), anchor='w')
-        self.weather.pack(fill='x', padx=16, pady=(0, 6))
-        main = tk.Frame(self, bg=BG)
-        main.pack(fill='both', expand=True, padx=8)
-        main.columnconfigure(0, weight=3)
-        main.columnconfigure(1, weight=4)
-        main.rowconfigure(0, weight=3)
-        main.rowconfigure(1, weight=2)
-        pm = self._panel(main, 'КАРТА · ПЕРЕМЕЩЕНИЕ И СЛЕЖЕНИЕ')
-        pm.grid(row=0, column=0, sticky='nsew', padx=4, pady=4)
-        tools = ttk.Frame(pm)
-        tools.pack(fill='x', pady=(0, 4))
-        self.follow_var = tk.BooleanVar(value=False)
-        self.map = TrackMap(pm, on_view_change=self._map_view_changed)
-        ttk.Button(tools, text='Вся трасса', command=self.map.fit_all).pack(side='left', padx=(0, 4))
-        ttk.Button(tools, text='К своему', command=self.map.follow_player).pack(side='left', padx=(0, 4))
-        ttk.Button(tools, text='За выбранным', command=lambda: self.map.follow_car(self.rival.selected)).pack(side='left')
-        follow_tools = ttk.Frame(pm)
-        follow_tools.pack(fill='x', pady=(0, 2))
-        ttk.Checkbutton(follow_tools, text='Следить', variable=self.follow_var,
-                        command=lambda: self.map.set_follow(self.follow_var.get())).pack(side='left')
-        tk.Label(follow_tools, text='ЛКМ — сдвиг · колесо — масштаб', bg=PANEL, fg='#8295aa',
-                 font=('Segoe UI', 8)).pack(side='left', padx=8)
-        self.map.pack(fill='both', expand=True)
-        pp = self._panel(main, 'ПОЗИЦИИ · ОТСТАВАНИЕ / ИНТЕРВАЛ')
-        pp.grid(row=0, column=1, rowspan=2, sticky='nsew', padx=4, pady=4)
-        self.positions = PositionList(pp, on_select=self._select_rival)
-        self.positions.pack(fill='both', expand=True)
-        below = tk.Frame(main, bg=BG)
-        below.grid(row=1, column=0, sticky='nsew', padx=4, pady=4)
-        below.columnconfigure((0, 1), weight=1)
-        below.rowconfigure(0, weight=1)
-        pr = self._panel(below, 'СОПЕРНИК')
-        pr.grid(row=0, column=0, sticky='nsew', padx=(0, 4))
-        self.rival_canvas = tk.Canvas(pr, bg=BG, highlightthickness=0, width=260, height=240)
-        self.rival_canvas.pack(fill='both', expand=True)
-        self.rival = RivalModelPanel(self.rival_canvas)
-        pt = self._panel(below, 'ШИНЫ · CORE °C / PSI')
-        pt.grid(row=0, column=1, sticky='nsew')
+        self.demo_button.pack(side='right', padx=4, pady=4)
+        ttk.Button(top, text='Переподключить', command=lambda: self._switch(self.feeds.demo)).pack(side='right', padx=2)
+        ttk.Button(top, text='Полный экран', command=self.toggle_fs).pack(side='right', padx=2)
+        self.weather = tk.Label(self, bg=BG, fg='#aaaaaa', font=('Consolas', 10), anchor='w', padx=12, pady=8)
+        self.weather.grid(row=1, column=0, sticky='ew')
+        main = tk.Frame(self, bg='#202020')
+        main.grid(row=2, column=0, sticky='nsew', padx=2)
+        main.rowconfigure(0, weight=1)
+        columns = []
+        for i, weight in enumerate((24, 20, 20, 36)):
+            main.columnconfigure(i, weight=weight, uniform='pitwall')
+            col = tk.Frame(main, bg=BG, width=1, height=1)
+            col.grid(row=0, column=i, sticky='nsew', padx=(0, 2) if i<3 else 0)
+            col.grid_propagate(False)
+            col.columnconfigure(0, weight=1)
+            columns.append(col)
+        vital, center, timing, field = columns
+        vital.rowconfigure(0, weight=4)
+        vital.rowconfigure(1, weight=1, minsize=174)
+        ps = self._panel(vital, 'ПЕРЕДАЧА // RPM // СКОРОСТЬ')
+        ps.shell.grid(row=0, column=0, sticky='nsew', pady=(0, 2))
+        self.dial = SpeedDial(ps)
+        self.dial.pack(fill='both', expand=True)
+        pi = self._panel(vital, 'ПЕДАЛИ · СВОЯ МАШИНА')
+        pi.shell.grid(row=1, column=0, sticky='nsew')
+        self.pedals = PedalPanel(pi)
+        self.pedals.pack(fill='both', expand=True)
+        center.rowconfigure(0, weight=3, minsize=290)
+        center.rowconfigure(1, weight=1, minsize=153)
+        center.rowconfigure(2, weight=0, minsize=150)
+        pt = self._panel(center, 'ШИНЫ · CORE °C / PSI')
+        pt.shell.grid(row=0, column=0, sticky='nsew', pady=(0, 2))
         self.tyres = TyrePanel(pt)
         self.tyres.pack(fill='both', expand=True)
-        bottom = tk.Frame(self, bg=BG)
-        bottom.pack(fill='x', padx=12, pady=6)
-        ps = self._panel(bottom, 'СВОЯ МАШИНА · SHARED MEMORY')
-        ps.pack(side='left', padx=(0, 6))
-        self.dial = SpeedDial(ps)
-        self.dial.pack()
-        pw = self._panel(bottom, 'ВЕТЕР')
-        pw.pack(side='left', fill='y', padx=(0, 6))
+        pf = self._panel(center, 'ТОПЛИВО')
+        pf.shell.grid(row=1, column=0, sticky='nsew', pady=(0, 2))
+        self.fuel = FuelPanel(pf)
+        self.fuel.pack(fill='both', expand=True)
+        pw = self._panel(center, 'ВЕТЕР')
+        pw.shell.grid(row=2, column=0, sticky='nsew')
         self.wind = WindRose(pw)
         self.wind.pack(fill='both', expand=True)
-        pe = self._panel(bottom, 'СЕССИЯ / СВОЯ МАШИНА')
-        pe.pack(side='left', fill='both', expand=True)
-        self.extra = tk.Label(pe, bg=PANEL, fg=FG, font=('Consolas', 12), justify='left', anchor='nw')
-        self.extra.pack(fill='both', expand=True, padx=8, pady=8)
-        self.diagnostics = tk.Label(self, bg=BG, fg='#8295aa', font=('Segoe UI', 9), anchor='w', wraplength=1380)
-        self.diagnostics.pack(side='bottom', fill='x', padx=12, pady=(0, 6))
-        # Reserve the fixed bottom panels BEFORE giving the map/table remaining space.
-        # Otherwise pack can clip the telemetry/footer on smaller desktop displays.
-        bottom.pack_forget()
-        main.pack_forget()
-        bottom.pack(side='bottom', fill='x', padx=12, pady=6)
-        main.pack(fill='both', expand=True, padx=8)
+        timing.rowconfigure(0, weight=3, minsize=340)
+        timing.rowconfigure(1, weight=2, minsize=230)
+        pe = self._panel(timing, 'ТАЙМИНГ · СВОЯ МАШИНА')
+        pe.shell.grid(row=0, column=0, sticky='nsew', pady=(0, 2))
+        self.extra = TimingPanel(pe)
+        self.extra.pack(fill='both', expand=True)
+        pr = self._panel(timing, 'ВЫБРАННЫЙ ПИЛОТ · 2D')
+        pr.shell.grid(row=1, column=0, sticky='nsew')
+        self.rival_canvas = tk.Canvas(pr, bg=PANEL, highlightthickness=0, width=1, height=1)
+        self.rival_canvas.pack(fill='both', expand=True)
+        self.rival = RivalModelPanel(self.rival_canvas)
+        field.rowconfigure(0, weight=1)
+        field.rowconfigure(1, weight=1)
+        pp = self._panel(field, 'ПОЗИЦИИ · ЛИДЕР / ИНТЕРВАЛ')
+        pp.shell.grid(row=0, column=0, sticky='nsew', pady=(0, 2))
+        self.positions = PositionList(pp, on_select=self._select_rival)
+        self.positions.pack(fill='both', expand=True)
+        pm = self._panel(field, 'КАРТА · ПЕРЕМЕЩЕНИЕ И СЛЕЖЕНИЕ')
+        pm.shell.grid(row=1, column=0, sticky='nsew')
+        tools = ttk.Frame(pm)
+        tools.pack(fill='x', padx=4, pady=4)
+        self.follow_var = tk.BooleanVar(value=False)
+        self.map = TrackMap(pm, on_view_change=self._map_view_changed)
+        ttk.Button(tools, text='Вся трасса', command=self.map.fit_all).pack(side='left', padx=(0, 3))
+        ttk.Button(tools, text='К своему', command=self.map.follow_player).pack(side='left', padx=(0, 3))
+        ttk.Button(tools, text='За выбранным', command=lambda: self.map.follow_car(self.rival.selected)).pack(side='left')
+        follow_tools = ttk.Frame(pm)
+        follow_tools.pack(fill='x', padx=4)
+        ttk.Checkbutton(follow_tools, text='Следить', variable=self.follow_var,
+                        command=lambda: self.map.set_follow(self.follow_var.get())).pack(side='left')
+        tk.Label(follow_tools, text='ЛКМ: сдвиг · колесо: масштаб', bg=PANEL, fg='#999999', font=('Consolas', 9)).pack(side='left', padx=4)
+        self.map.pack(fill='both', expand=True)
+        self.diagnostics = tk.Label(self, bg=PANEL, fg='#aaaaaa', font=('Consolas', 9), anchor='w', justify='left', padx=10, pady=7, wraplength=1380)
+        self.diagnostics.grid(row=3, column=0, sticky='ew', padx=2, pady=2)
         self.bind('<Configure>', self._resize)
 
     def _resize(self, event):
@@ -200,7 +221,7 @@ class Dashboard(tk.Tk):
         udp = now - s.broadcast_seen < 3
         shared = now - s.shared_seen < 3
         label = 'DEMO — ТЕСТОВЫЕ ДАННЫЕ' if s.demo else f'ACC: UDP {"ON" if udp else "OFF"} · MEMORY {"ON" if shared else "OFF"}'
-        self.status.config(text=label, fg='#ffc34f' if s.demo else '#67cfa0' if udp or shared else '#eb735b')
+        self.status.config(text=label, fg='#ffd700' if s.demo else '#00ff66' if udp or shared else '#ff4545')
         remaining = '--' if s.session_remaining_ms is None else f'{int(s.session_remaining_ms / 60000)} мин'
         self.weather.config(text=f'{s.track}   ·   Воздух {value(s.air, " °C")}   ·   Асфальт {value(s.road, " °C")}   ·   '
                                  f'Влажность {value(None if s.wetness is None else s.wetness * 100, "%", 0)}   ·   Осталось {remaining}')
@@ -210,12 +231,9 @@ class Dashboard(tk.Tk):
         self.dial.render(s)
         self.tyres.render(s)
         self.wind.render(s)
-        laps = f'{s.current_lap}' + (f'/{s.total_laps}' if s.total_laps else '') if s.current_lap else '--'
-        self.extra.config(text=f'Позиция: {s.position or "--"}     Круг: {laps}\n'
-                               f'Текущий: {fmt_ms(s.lap_ms)}\nЛучший:  {fmt_ms(s.best_ms)}\n'
-                               f'Топливо: {value(s.fuel, " л")}\n'
-                               f'Газ: {value(None if s.gas is None else s.gas * 100, "%", 0)}   '
-                               f'Тормоз: {value(None if s.brake is None else s.brake * 100, "%", 0)}')
+        self.pedals.render(s)
+        self.fuel.render(s)
+        self.extra.render(s)
         notes = [] if s.demo else [s.broadcast_error, s.shared_error]
         if not s.demo and not shared:
             notes.append('Для шин, оборотов, топлива и ветра запустите приложение на Windows-ПК с игрой')

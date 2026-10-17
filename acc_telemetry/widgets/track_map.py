@@ -7,7 +7,7 @@ from acc_telemetry.camera import MapCamera
 
 class TrackMap(tk.Canvas):
     def __init__(self, master, on_view_change=None, **kw):
-        super().__init__(master, bg='#0b0f15', highlightthickness=0, width=500, height=350, **kw)
+        super().__init__(master, bg='#0a0a0a', highlightthickness=0, width=500, height=350, **kw)
         self.camera = MapCamera()
         self.on_view_change = on_view_change
         self.outline = []
@@ -143,35 +143,48 @@ class TrackMap(tk.Canvas):
                 a, b, c, d = self.bounds
                 self.bounds = min(a, limits[0]), min(b, limits[1]), max(c, limits[2]), max(d, limits[3])
         if self.bounds is None:
-            self.create_text(w/2, h/2, text='Ожидание позиций машин', fill='#8295aa', font=('Segoe UI', 12))
+            self.create_text(w/2, h/2, text='Ожидание позиций машин', fill='#aaaaaa', font=('Segoe UI', 12))
             return
         self.camera.update(self.bounds, w, h, self.target_position)
         project = self.camera.project
         if len(points) > 1:
             drawn = points + points[:1] if self.outline else points
             flat = [v for p in drawn for v in project(*p)]
-            self.create_line(flat, fill='#243b53', width=9 if self.outline else 3, joinstyle='round')
+            self.create_line(flat, fill='#343434', width=9 if self.outline else 3, joinstyle='round')
         if self.outline and len(self.trail) > 1:
             flat = [v for p in self.trail for v in project(*p)]
             self.create_line(flat, fill='#7a7037', width=2)
+        labels = []
         for car in sorted(cars, key=lambda c: c.car_id == observed_id):
             x, y = project(car.x, car.y)
             if not (-40 <= x <= w + 40 and -40 <= y <= h + 40):
                 continue
             own, watched = car.car_id == state.selected_id, car.car_id == observed_id
-            color = '#ffd24a' if own else '#69c3f0' if car.in_pit else '#d4dfeb'
+            color = '#ffd700' if own else '#00d9ff' if car.in_pit else '#eeeeee'
             r = 7 if own or watched else 4
-            self.create_oval(x-r, y-r, x+r, y+r, fill=color, outline='#0b0f15')
+            self.create_oval(x-r, y-r, x+r, y+r, fill=color, outline='#0a0a0a')
             if watched and self.camera.follow:
-                self.create_oval(x-13, y-13, x+13, y+13, outline='#67cfa0', width=2)
+                self.create_oval(x-13, y-13, x+13, y+13, outline='#00ff66', width=2)
             label = ('ВЫ' if state.player_id >= 0 else 'ФОКУС UDP') if own else (car.name[:20] if watched else str(car.position or car.car_id))
-            self.create_text(x, y-19, text=label, fill=color, font=('Consolas', 9))
+            labels.append((0 if own else 1 if watched else 2, x, y-19, label, color))
+        placed = []
+        for _, x, y, label, color in sorted(labels, key=lambda item: item[0]):
+            item = self.create_text(x, y, text=label, fill=color, font=('Consolas', 9))
+            box = self.bbox(item)
+            if not box:
+                continue
+            a, b, c, d = box
+            overlaps = any(a < r+3 and c > l-3 and b < bot+3 and d > top-3 for l, top, r, bot in placed)
+            if overlaps or a < 2 or c > w-2 or b < 43 or d > h-24:
+                self.delete(item)
+            else:
+                placed.append(box)
         subtitle = 'Контур трассы' if self.outline else 'Записанный след (не готовый контур)'
         mode = ('Слежение: ' + self.target_name if self.target_position else 'Ожидание выбранного пилота') if self.camera.follow else 'Обзор' if self.camera.overview else 'Свободная карта'
         # HUD has an opaque background so off-screen parts of a zoomed track cannot obscure it.
-        self.create_rectangle(0, 0, w, 42, fill='#0b0f15', outline='')
-        self.create_rectangle(0, h-23, w, h, fill='#0b0f15', outline='')
-        self.create_text(10, 12, anchor='w', text=state.track, fill='#d4dfeb', font=('Consolas', 11, 'bold'))
-        self.create_text(10, 31, anchor='w', text=self.notice or mode, fill='#67cfa0' if self.camera.follow else '#8295aa', font=('Segoe UI', 9))
-        self.create_text(10, h-12, anchor='w', text=subtitle, fill='#8295aa', font=('Segoe UI', 9))
-        self.create_text(w-10, 12, anchor='e', text=f'{self.zoom:.1f}x', fill='#8295aa')
+        self.create_rectangle(0, 0, w, 42, fill='#0a0a0a', outline='')
+        self.create_rectangle(0, h-23, w, h, fill='#0a0a0a', outline='')
+        self.create_text(10, 12, anchor='w', text=state.track, fill='#eeeeee', font=('Consolas', 11, 'bold'))
+        self.create_text(10, 31, anchor='w', text=self.notice or mode, fill='#00ff66' if self.camera.follow else '#aaaaaa', font=('Segoe UI', 9))
+        self.create_text(10, h-12, anchor='w', text=subtitle, fill='#aaaaaa', font=('Segoe UI', 9))
+        self.create_text(w-10, 12, anchor='e', text=f'{self.zoom:.1f}x', fill='#aaaaaa')

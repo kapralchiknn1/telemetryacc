@@ -8,7 +8,8 @@ import tempfile
 
 root = Path(SPECPATH)
 a = Analysis([str(root / 'launcher.py')], pathex=[str(root)],
-             binaries=[], datas=[(str(root / 'tracks'), 'tracks')],
+             binaries=[], datas=[(str(root / 'tracks'), 'tracks'),
+                                 (str(root / 'THIRD_PARTY_NOTICES.md'), '.')],
              hiddenimports=['acc_telemetry.app'], hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=[], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='acc_telemetry',

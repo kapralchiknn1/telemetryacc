@@ -68,8 +68,22 @@ class DashboardSmokeTests(unittest.TestCase):
             app.map.fit_all()
             app.toggle_fs()
             app.toggle_fs()
+            # Every pit-wall panel must remain inside the root at both layouts.
+            for geometry, expected_model in [('1100x760', False), ('1920x1080', True)]:
+                app.geometry(geometry)
+                app.update()
+                app.update_idletasks()
+                for panel in (app.dial, app.pedals, app.tyres, app.fuel, app.wind,
+                              app.extra, app.rival_canvas, app.map, app.positions):
+                    self.assertGreater(panel.winfo_width(), 100)
+                    self.assertGreater(panel.winfo_height(), 100)
+                    self.assertGreaterEqual(panel.winfo_rootx(), app.winfo_rootx())
+                    self.assertLessEqual(panel.winfo_rootx()+panel.winfo_width(),
+                                         app.winfo_rootx()+app.winfo_width())
+                    self.assertLessEqual(panel.winfo_rooty()+panel.winfo_height(),
+                                         app.winfo_rooty()+app.winfo_height())
+                self.assertEqual('model' in app.positions.tree.cget('displaycolumns'), expected_model)
             app.geometry('1100x760')
-            app.update_idletasks()
             app._switch(True)
             app.update()
         finally:
