@@ -1,5 +1,7 @@
 """ACC desktop dashboard. Works as a script, python -m package, or PyInstaller exe."""
 from pathlib import Path
+import json
+import logging
 import sys
 import time
 import tkinter as tk
@@ -40,6 +42,7 @@ class Dashboard(tk.Tk):
         self.outline = []
         self.outline_error = ''
         self.after_id = None
+        self.callback_errors = []
         if args.track_map:
             try:
                 self.custom_outline = load_track(args.track_map)
@@ -50,6 +53,12 @@ class Dashboard(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self._close)
         self._switch(args.demo)
         self._tick()
+
+    def report_callback_exception(self, exc_type, exc_value, traceback):
+        self.callback_errors.append(str(exc_value))
+        logging.error('Tk callback failed', exc_info=(exc_type, exc_value, traceback))
+        # Tk's default reporter writes to stderr, which does not exist in a
+        # --windowed exe. The launcher provides a persistent UTF-8 log instead.
 
     def _build_style(self):
         style = ttk.Style(self)
@@ -209,8 +218,36 @@ class Dashboard(tk.Tk):
 
 def main():
     args = parse_args()
-    Dashboard(args).mainloop()
+    app = Dashboard(args)
+    result = {'ok': not args.smoke_test, 'mode': 'demo' if args.demo else 'live'}
+    if args.smoke_test:
+        def verify_window():
+            try:
+                app.update_idletasks()
+                if not app.winfo_viewable():
+                    raise RuntimeError('Dashboard window was not mapped')
+                if app.callback_errors:
+                    raise RuntimeError('Tk callbacks failed: ' + '; '.join(app.callback_errors))
+                if args.demo and len(app.positions.tree.get_children()) != 12:
+                    raise RuntimeError('Demo car list was not rendered')
+                result['ok'] = True
+            except Exception as exc:
+                result['ok'] = False
+                result['error'] = str(exc)
+                logging.exception('Frozen smoke test failed')
+            finally:
+                try:
+                    app._close()
+                except Exception as exc:
+                    result['ok'] = False
+                    result['error'] = str(exc)
+                    logging.exception('Shutdown failed')
+        app.after(1200, verify_window)
+    app.mainloop()
+    if args.smoke_report:
+        args.smoke_report.write_text(json.dumps(result), encoding='utf-8')
+    return 0 if result['ok'] else 1
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

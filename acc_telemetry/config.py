@@ -13,6 +13,8 @@ def parse_args(argv=None):
     parser.add_argument('--config', type=Path, help='путь к broadcasting.json ACC; пароль не сохраняется')
     parser.add_argument('--track-map', type=Path, help='JSON-контур трассы в мировых метрах x/y')
     parser.add_argument('--fullscreen', action='store_true')
+    parser.add_argument('--smoke-test', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--smoke-report', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     config = {}
     # An explicit config must not depend on HOME/USERPROFILE. Headless Windows
